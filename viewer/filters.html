@@ -5,39 +5,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>ImpulseCalc 3.5 — Inputs</title>
 <style>
-:root { color-scheme: light; --ink:#1a1a1a; --line:#d4d0c8; --muted:#5c5c5c; }
+:root { color-scheme: dark; --ink:#f2eef8; --line:#2a2438; --muted:#9b93ad; --bg:#0b0a10; --panel:#14121c; --purple:#7c5cff; }
 * { box-sizing: border-box; }
-body { margin:0; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--ink); background:#f7f7f5; }
-header { position:sticky; top:0; z-index:5; background:#fff; border-bottom:1px solid var(--line); padding:.55rem .75rem; display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+body { margin:0; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+header { position:sticky; top:0; z-index:5; background:#100e18; border-bottom:1px solid var(--line); padding:.55rem .75rem; display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
 h1 { font-size:1rem; margin:0; font-weight:650; letter-spacing:-0.02em; }
-.badge { font-size:.72rem; border:1px solid #555; padding:.1rem .4rem; }
+.badge { font-size:.72rem; border:1px solid #3d2f6b; padding:.1rem .4rem; border-radius:999px; color:#d7ccff; background:#1a1528; }
 .actions { margin-left:auto; display:flex; gap:.4rem; flex-wrap:wrap; }
-button { font:13px system-ui; padding:.4rem .75rem; cursor:pointer; }
-button.primary { background:#1a1a1a; color:#fff; border:1px solid #1a1a1a; }
+button { font:13px system-ui; padding:.4rem .75rem; cursor:pointer; border:1px solid var(--line); background:#1c1828; color:var(--ink); border-radius:8px; }
+button.primary { background:var(--purple); border-color:#8f78ff; color:#fff; font-weight:650; }
 button:disabled { opacity:.5; }
 .layout { display:grid; grid-template-columns: 11rem minmax(0,1fr); min-height: calc(100vh - 52px); }
 @media (max-width:720px){ .layout { grid-template-columns:1fr; } }
-nav { border-right:1px solid var(--line); background:#fff; padding:.55rem; }
-nav button.tab { display:block; width:100%; text-align:left; margin:0 0 .3rem; border:1px solid var(--line); background:#fafafa; }
-nav button.tab.active { border-color:#333; font-weight:650; }
+nav { border-right:1px solid var(--line); background:var(--panel); padding:.55rem; }
+nav button.tab { display:block; width:100%; text-align:left; margin:0 0 .3rem; }
+nav button.tab.active { border-color:#8f78ff; font-weight:650; background:#221a38; }
 nav .intent { margin-top:.7rem; }
 nav .intent label { display:block; font-size:.7rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:.35rem 0 .2rem; }
-nav select { width:100%; font:13px ui-monospace,monospace; padding:.3rem; }
+nav select { width:100%; font:13px ui-monospace,monospace; padding:.3rem; background:#0e0c14; color:var(--ink); border:1px solid var(--line); border-radius:6px; }
 main { padding:.7rem .85rem 2rem; overflow:auto; }
 .hint { font-size:.8rem; color:var(--muted); margin:0 0 .7rem; }
 .sg { margin:0 0 1rem; }
-.sg h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:#444; margin:0 0 .4rem; }
-.knob { display:flex; flex-direction:column; gap:.15rem; padding:.45rem .55rem; border:1px solid var(--line); margin:0 0 .4rem; background:#fff; border-left:5px solid #888; }
-.knob.sys-gas { border-left-color:#1d5a8a; background:#f3f7fb; }
-.knob.sys-pack { border-left-color:#5a4a8a; background:#f7f5fb; }
-.knob.sys-metal { border-left-color:#2a7a68; background:#f4faf8; }
+.sg h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 .4rem; }
+.knob { display:flex; flex-direction:column; gap:.15rem; padding:.45rem .55rem; border:1px solid var(--line); margin:0 0 .4rem; background:#171326; border-left:5px solid #888; border-radius:8px; }
+.knob.sys-gas { border-left-color:#5b9fd4; }
+.knob.sys-pack { border-left-color:#9b7bff; }
+.knob.sys-metal { border-left-color:#46c2a3; }
 .knob-head { display:flex; gap:.4rem; align-items:baseline; }
 .knob-label { font-weight:600; font-size:.82rem; }
-.knob-sym { font:13px ui-serif, Georgia, serif; }
+.knob-sym { font:13px ui-serif, Georgia, serif; color:#d7ccff; }
 .knob-unit { margin-left:auto; font:11px ui-monospace,monospace; color:var(--muted); }
-.knob-rts { font:11px ui-monospace,monospace; color:#666; }
-.knob input[type=number] { font:13px ui-monospace,monospace; padding:.28rem .4rem; width:100%; max-width:14rem; }
-#status { font-size:.8rem; color:#355; min-height:1.2em; }
+.knob-rts { font:11px ui-monospace,monospace; color:#8a819c; }
+.knob input[type=number] { font:13px ui-monospace,monospace; padding:.28rem .4rem; width:100%; max-width:14rem; background:#0e0c14; color:var(--ink); border:1px solid var(--line); border-radius:6px; }
+#status { font-size:.8rem; color:#b9f0d4; min-height:1.2em; }
 </style>
 </head>
 <body>
