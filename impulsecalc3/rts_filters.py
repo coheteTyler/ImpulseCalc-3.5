@@ -37,7 +37,7 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
             "relative_inlet": {
                 "label": "Relative inlet (post-stator)",
                 "keys": [
-                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Relative inlet angle", "sym": "β1", "unit": "deg", "default": 65.0},
+                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Relative inlet from axial", "sym": "β1", "unit": "deg", "default": 65.0, "help": "θ from vertical upright to W1 is 90°−|β1|"},
                     {"rts": "(derived)", "id": "W1_m_s", "label": "Relative inlet speed", "sym": "W1", "unit": "m/s", "default": 1200.0},
                     {"rts": "cycle.eta_n", "id": "eta_n", "label": "Nozzle efficiency (SCOPING)", "sym": "ηn", "unit": "—", "default": 0.90},
                 ],
@@ -93,19 +93,19 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
                     {"rts": "rotorValues.t_ri", "id": "t_ri_mm", "label": "Inlet gap", "sym": "tri", "unit": "mm", "default": 3.0},
                     {"rts": "rotorValues.gamma_turning_ri", "id": "gamma_turning_ri_deg", "label": "Inlet turning wedge", "sym": "γri", "unit": "deg", "default": -10.0},
                     {"rts": "cycle.gamma_ri", "id": "gamma_ri_deg", "label": "Rotor inlet wedge", "sym": "γri,wedge", "unit": "deg", "default": 8.0},
-                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Relative exit angle", "sym": "β2", "unit": "deg", "default": 16.0},
+                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Relative exit from axial", "sym": "β2", "unit": "deg", "default": -65.0},
                     {"rts": "cycle.reaction", "id": "reaction", "label": "Degree of reaction", "sym": "R", "unit": "—", "default": 0.0},
                 ],
             },
             "ic3_mm": {
                 "label": "ImpulseCalc3 absolute metal (mm)",
                 "keys": [
-                    {"rts": "(ic3)", "id": "hu_mm", "label": "Upper sagitta", "sym": "hu", "unit": "mm", "default": 5.0},
-                    {"rts": "(ic3)", "id": "hl_mm", "label": "Lower sagitta", "sym": "hl", "unit": "mm", "default": 2.2},
+                    {"rts": "(ic3)", "id": "hu_mm", "label": "Upper sagitta", "sym": "hu", "unit": "mm", "default": 6.5},
+                    {"rts": "(ic3)", "id": "hl_mm", "label": "Lower sagitta", "sym": "hl", "unit": "mm", "default": 1.5},
                     {"rts": "(ic3)", "id": "le_mm", "label": "LE fillet", "sym": "rLE", "unit": "mm", "default": 0.4},
                     {"rts": "(ic3)", "id": "te_mm", "label": "TE fillet", "sym": "rTE", "unit": "mm", "default": 0.0},
-                    {"rts": "(ic3)", "id": "lin_mm", "label": "Inlet straight", "sym": "Lin", "unit": "mm", "default": 4.25},
-                    {"rts": "(ic3)", "id": "lout_mm", "label": "Outlet straight", "sym": "Lout", "unit": "mm", "default": 4.25},
+                    {"rts": "(ic3)", "id": "lin_mm", "label": "Inlet straight", "sym": "Lin", "unit": "mm", "default": 0.0},
+                    {"rts": "(ic3)", "id": "lout_mm", "label": "Outlet straight", "sym": "Lout", "unit": "mm", "default": 0.0},
                 ],
             },
         },
