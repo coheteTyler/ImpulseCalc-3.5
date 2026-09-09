@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>ImpulseCalc3 — Marlin V2 rotor cascade</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 920px; margin: 2rem auto; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    .flag { display: inline-block; padding: .1rem .5rem; border: 1px solid #999; font-size: .8rem; }
+    img { max-width: 100%; border: 1px solid #ddd; margin: .5rem 0 1.5rem; }
+    pre { background: #f4f4f4; padding: 1rem; overflow: auto; }
+    .warn { color: #8a1c1c; }
+    a { color: #1a4a7a; }
+  </style>
+</head>
+<body>
+  <h1>ImpulseCalc3 — Marlin V2 rotor (2D relative cascade)</h1>
+  <p>Not CFX. Not flight. One JSON job. CFD checks the blade; it does not invent efficiency.</p>
+  <p><span class="flag">PREDICTED</span> W1/U/p1/T1 unsigned until ORBIT signs a GG-to-rotor station.</p>
+  <p class="warn">If plots are missing, run <code>./start.sh</code> on Linux with ESI OpenFOAM v2412. This page is a thin viewer, not a design board. No sliders. One machine.</p>
+  <h2>Force history</h2>
+  <img src="last_plots/force_history.png" alt="Ft/Fd history"/>
+  <h2>Wall Cp (blade0) — p from the wall patch</h2>
+  <img src="last_plots/wall_cp_blade0.png" alt="wall Cp"/>
+  <h2>p field</h2>
+  <img src="last_plots/contour_p.png" alt="p contour"/>
+  <h2>|U| field</h2>
+  <img src="last_plots/contour_Umag.png" alt="U magnitude"/>
+  <p>Job result: <a href="../output/job_result.json">output/job_result.json</a></p>
+</body>
+</html>

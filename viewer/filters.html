@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ImpulseCalc 3.5 — Inputs</title>
+<style>
+:root { color-scheme: light; --ink:#1a1a1a; --line:#d4d0c8; --muted:#5c5c5c; }
+* { box-sizing: border-box; }
+body { margin:0; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--ink); background:#f7f7f5; }
+header { position:sticky; top:0; z-index:5; background:#fff; border-bottom:1px solid var(--line); padding:.55rem .75rem; display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+h1 { font-size:1rem; margin:0; font-weight:650; letter-spacing:-0.02em; }
+.badge { font-size:.72rem; border:1px solid #555; padding:.1rem .4rem; }
+.actions { margin-left:auto; display:flex; gap:.4rem; flex-wrap:wrap; }
+button { font:13px system-ui; padding:.4rem .75rem; cursor:pointer; }
+button.primary { background:#1a1a1a; color:#fff; border:1px solid #1a1a1a; }
+button:disabled { opacity:.5; }
+.layout { display:grid; grid-template-columns: 11rem minmax(0,1fr); min-height: calc(100vh - 52px); }
+@media (max-width:720px){ .layout { grid-template-columns:1fr; } }
+nav { border-right:1px solid var(--line); background:#fff; padding:.55rem; }
+nav button.tab { display:block; width:100%; text-align:left; margin:0 0 .3rem; border:1px solid var(--line); background:#fafafa; }
+nav button.tab.active { border-color:#333; font-weight:650; }
+nav .intent { margin-top:.7rem; }
+nav .intent label { display:block; font-size:.7rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:.35rem 0 .2rem; }
+nav select { width:100%; font:13px ui-monospace,monospace; padding:.3rem; }
+main { padding:.7rem .85rem 2rem; overflow:auto; }
+.hint { font-size:.8rem; color:var(--muted); margin:0 0 .7rem; }
+.sg { margin:0 0 1rem; }
+.sg h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:#444; margin:0 0 .4rem; }
+.knob { display:flex; flex-direction:column; gap:.15rem; padding:.45rem .55rem; border:1px solid var(--line); margin:0 0 .4rem; background:#fff; border-left:5px solid #888; }
+.knob.sys-gas { border-left-color:#1d5a8a; background:#f3f7fb; }
+.knob.sys-pack { border-left-color:#5a4a8a; background:#f7f5fb; }
+.knob.sys-metal { border-left-color:#2a7a68; background:#f4faf8; }
+.knob-head { display:flex; gap:.4rem; align-items:baseline; }
+.knob-label { font-weight:600; font-size:.82rem; }
+.knob-sym { font:13px ui-serif, Georgia, serif; }
+.knob-unit { margin-left:auto; font:11px ui-monospace,monospace; color:var(--muted); }
+.knob-rts { font:11px ui-monospace,monospace; color:#666; }
+.knob input[type=number] { font:13px ui-monospace,monospace; padding:.28rem .4rem; width:100%; max-width:14rem; }
+#status { font-size:.8rem; color:#355; min-height:1.2em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ImpulseCalc 3.5 Inputs</h1>
+  <span class="badge">PREDICTED</span>
+  <span class="badge">SCOPING</span>
+  <div class="actions">
+    <span id="status"></span>
+    <button type="button" id="btn-reset">Reset defaults</button>
+    <button type="button" class="primary" id="btn-update">Update</button>
+  </div>
+</header>
+<div class="layout">
+  <nav>
+    <button type="button" class="tab active" data-group="all">All</button>
+    <button type="button" class="tab" data-group="inlet_gas">Inlet gas</button>
+    <button type="button" class="tab" data-group="size">Size</button>
+    <button type="button" class="tab" data-group="metal">Metal</button>
+    <div class="intent">
+      <label for="intent">Smart filter</label>
+      <select id="intent">
+        <option value="">— none —</option>
+        <option value="inlet">Change inlet</option>
+        <option value="flow_rate">Flow rate</option>
+        <option value="horizontal">Horizontal size</option>
+        <option value="vertical">Vertical / chord</option>
+        <option value="size">Size (all)</option>
+        <option value="metal">Metal only</option>
+      </select>
+    </div>
+  </nav>
+  <main>
+    <p class="hint" id="group_hint">No stator metal. Inlet gas = uniform post-stator fluid. Update writes the central profile on the main app.</p>
+    <div id="fields"></div>
+  </main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let SCHEMA = null;
+let VALUES = {};
+let group = "all";
+let intent = "";
+
+async function loadSchema() {
+  const r = await fetch("/api/filters/schema");
+  if (!r.ok) throw new Error("schema " + r.status);
+  SCHEMA = await r.json();
+  VALUES = { ...(SCHEMA.defaults || {}) };
+  try {
+    const p = await fetch("/api/profile");
+    if (p.ok) {
+      const j = await p.json();
+      if (j && j.values) VALUES = { ...VALUES, ...j.values };
+    }
+  } catch (_) {}
+  paint();
+}
+
+function visibleKeys() {
+  const all = SCHEMA.keys || [];
+  let keys = all;
+  if (group !== "all") keys = keys.filter(k => k.group === group);
+  if (intent && SCHEMA.intents && SCHEMA.intents[intent]) {
+    const want = new Set(SCHEMA.intents[intent]);
+    keys = keys.filter(k => want.has(k.id));
+  }
+  return keys;
+}
+
+function paint() {
+  const gmeta = (SCHEMA.groups || {})[group];
+  $("group_hint").textContent = gmeta && gmeta.hint
+    ? gmeta.hint
+    : "No stator metal. Inlet gas = uniform post-stator fluid. Update writes the central profile on the main app.";
+  const box = $("fields");
+  box.innerHTML = "";
+  const bySg = new Map();
+  for (const k of visibleKeys()) {
+    const sg = k.subgroup || "keys";
+    if (!bySg.has(sg)) bySg.set(sg, []);
+    bySg.get(sg).push(k);
+  }
+  for (const [sg, keys] of bySg) {
+    const sec = document.createElement("div");
+    sec.className = "sg";
+    const h = document.createElement("h2");
+    h.textContent = sg.replace(/_/g, " ");
+    sec.appendChild(h);
+    for (const k of keys) {
+      const d = document.createElement("div");
+      d.className = "knob " + (k.css || "");
+      d.innerHTML =
+        `<div class="knob-head"><span class="knob-label">${k.label}</span>` +
+        `<span class="knob-sym">${k.sym || ""}</span>` +
+        `<span class="knob-unit">${k.unit || ""}</span></div>` +
+        `<div class="knob-rts">RTS ${k.rts || "—"}</div>`;
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.id = "f_" + k.id;
+      inp.step = "any";
+      inp.value = VALUES[k.id] ?? k.default ?? "";
+      inp.addEventListener("change", () => {
+        const n = Number(inp.value);
+        if (!Number.isNaN(n)) VALUES[k.id] = n;
+      });
+      d.appendChild(inp);
+      sec.appendChild(d);
+    }
+    box.appendChild(sec);
+  }
+  if (!box.children.length) {
+    box.innerHTML = "<p class=\"hint\">No knobs match this filter.</p>";
+  }
+}
+
+function readValuesFromDom() {
+  for (const k of (SCHEMA.keys || [])) {
+    const el = document.getElementById("f_" + k.id);
+    if (!el) continue;
+    const n = Number(el.value);
+    if (!Number.isNaN(n)) VALUES[k.id] = n;
+  }
+}
+
+async function doUpdate() {
+  readValuesFromDom();
+  $("btn-update").disabled = true;
+  $("status").textContent = "Writing profile…";
+  try {
+    const body = { values: VALUES };
+    const r = await fetch("/api/profile/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    $("status").textContent = "Profile updated.";
+    // Notify opener (main app) if split-screen popup.
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage({ type: "ic35_profile_updated", profile: j.profile }, "*");
+    }
+  } catch (e) {
+    $("status").textContent = String(e.message || e);
+  } finally {
+    $("btn-update").disabled = false;
+  }
+}
+
+document.querySelectorAll("nav button.tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button.tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    group = btn.dataset.group;
+    paint();
+  });
+});
+$("intent").addEventListener("change", () => { intent = $("intent").value; paint(); });
+$("btn-update").addEventListener("click", doUpdate);
+$("btn-reset").addEventListener("click", () => {
+  VALUES = { ...(SCHEMA.defaults || {}) };
+  paint();
+  $("status").textContent = "Defaults restored (not written until Update).";
+});
+
+loadSchema().catch(e => { $("status").textContent = String(e); });
+</script>
+</body>
+</html>

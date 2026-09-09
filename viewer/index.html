@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>ImpulseCalc3</title>
+  <style>
+    :root { --ink:#1a1a1a; --muted:#555; --line:#c8c8c8; --bg:#f7f6f3; --card:#fff; --bad:#8a1c1c; --ok:#1a5c32; --pred:#6b4fa0; }
+    * { box-sizing: border-box; }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; color: var(--ink); background: var(--bg); }
+    header { background: #1f2430; color: #f3f1ea; padding: 1rem 1.25rem; }
+    header h1 { margin: 0; font-size: 1.25rem; font-weight: 650; }
+    header p { margin: .35rem 0 0; font-size: .9rem; color: #cfc8b8; max-width: 70rem; }
+    main { display: grid; grid-template-columns: minmax(22rem, 28rem) 1fr; gap: 0; min-height: calc(100vh - 5.5rem); }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    form { background: var(--card); border-right: 1px solid var(--line); padding: 1rem 1.1rem 2rem; }
+    .panel { padding: 1rem 1.2rem 2rem; }
+    label { display: block; font-size: .78rem; color: var(--muted); margin-top: .55rem; }
+    label span.k { font-weight: 650; color: var(--ink); }
+    input[type=number], select, textarea { width: 100%; font: 13px ui-monospace, Consolas, monospace; padding: .28rem .4rem; border: 1px solid #999; background: #fff; }
+    textarea { min-height: 7rem; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .5rem; }
+    fieldset { border: 1px solid var(--line); margin: .75rem 0; padding: .6rem .7rem .8rem; }
+    legend { font-size: .85rem; font-weight: 700; padding: 0 .3rem; }
+    .hint { font-size: .75rem; color: var(--muted); margin: .2rem 0 .4rem; }
+    button { font: 650 13px ui-sans-serif, system-ui, sans-serif; padding: .45rem .7rem; margin: .15rem .25rem .15rem 0; border: 1px solid #333; background: #ece8df; cursor: pointer; }
+    button.primary { background: #2c3344; color: #fff; border-color: #111; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .flag { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .04em; padding: .12rem .45rem; border: 1px solid #999; margin-right: .3rem; }
+    .flag.pred { background: #efe8f8; border-color: var(--pred); color: #3a2860; }
+    .flag.bad { background: #fde8e8; border-color: var(--bad); color: var(--bad); }
+    .flag.ok { background: #e4f4e8; border-color: var(--ok); color: var(--ok); }
+    img.preview { width: 100%; max-width: 920px; border: 1px solid #444; background: #fff; }
+    pre.err { background: #fde8e8; color: #400; border: 2px solid var(--bad); padding: .7rem; white-space: pre-wrap; font-size: .82rem; }
+    pre.out { background: #f4f4f4; padding: .7rem; overflow: auto; font-size: .78rem; }
+    table { border-collapse: collapse; font-size: .85rem; }
+    td, th { border: 1px solid #bbb; padding: .25rem .5rem; }
+    .readout { font-family: ui-monospace, Consolas, monospace; font-size: .8rem; background: #f6fff6; border: 1px solid #8a8; padding: .45rem .55rem; margin: .5rem 0; }
+    a { color: #1a4a7a; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>ImpulseCalc3 — 2D relative cascade</h1>
+  <p>Not CFX. Not flight. One JSON job. The outline PNG is the mesh writer, not a cartoon.
+     CFD checks the blade; it does not invent efficiency.
+     <span class="flag pred">PREDICTED</span>
+     W1/U/p1 unsigned. Do not treat 31 N as a design load.</p>
+</header>
+<main>
+<form id="knobs" onsubmit="return false;">
+  <fieldset>
+    <legend>Family</legend>
+    <select name="profile_family" id="family" onchange="onFamily()">
+      <option value="impulse_bucket" selected>impulse_bucket (dual-arc cup)</option>
+      <option value="circular_arc_camber_metal_angles">circular_arc foil (NACA t/c)</option>
+      <option value="profile_points">profile_points (closed list)</option>
+    </select>
+    <p class="hint">Cup = Pelton-style U. Foil = circular-arc camber + thickness. Points = closed (x,y). Open polyline fails loud.</p>
+  </fieldset>
+
+  <fieldset id="cup_box">
+    <legend>Cup — h<sub>u</sub>/c · h<sub>l</sub>/c · fillets</legend>
+    <div class="row">
+      <label><span class="k">upper_sagitta_c</span> (upper_h)
+        <input type="number" name="upper_sagitta_c" step="0.005" min="0.12" max="0.70" value="0.50" onchange="previewSoon()"/>
+      </label>
+      <label><span class="k">lower_sagitta_c</span> (lower_h)
+        <input type="number" name="lower_sagitta_c" step="0.005" min="0.02" max="0.60" value="0.22" onchange="previewSoon()"/>
+      </label>
+    </div>
+    <div class="row">
+      <label><span class="k">le_fillet_r_c</span>
+        <input type="number" name="le_fillet_r_c" step="0.002" min="0" max="0.15" value="0.04" onchange="previewSoon()"/>
+      </label>
+      <label><span class="k">te_fillet_r_c</span>
+        <input type="number" name="te_fillet_r_c" step="0.002" min="0" max="0.15" value="0.04" onchange="previewSoon()"/>
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset id="foil_box" hidden>
+    <legend>Foil — t/c · β from job geometry</legend>
+    <div class="row3">
+      <label><span class="k">thickness_c</span>
+        <input type="number" name="thickness_c" step="0.005" min="0.04" max="0.30" value="0.12" onchange="previewSoon()"/>
+      </label>
+      <label><span class="k">beta1_flow_deg</span>
+        <input type="number" name="beta1_flow_deg" step="0.5" value="72" onchange="previewSoon()"/>
+      </label>
+      <label><span class="k">beta2_flow_deg</span>
+        <input type="number" name="beta2_flow_deg" step="0.5" value="-72" onchange="previewSoon()"/>
+      </label>
+    </div>
+    <p class="hint">Metal β* = flow β − i / + δ. Meanline, not a second engine setpoint.</p>
+  </fieldset>
+
+  <fieldset id="pts_box" hidden>
+    <legend>Closed profile_points</legend>
+    <textarea name="profile_points_text" placeholder='[[0,0],[0.01,0],[0.01,0.002],[0,0.002],[0,0]]'></textarea>
+    <p class="hint">First point must equal last. Self-intersecting / zero-area / open fails loud.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Packing — c · σ · Z · r · span</legend>
+    <div class="row">
+      <label><span class="k">chord_m</span>
+        <input type="number" name="chord_m" step="0.0005" min="0.002" max="0.08" value="0.01" onchange="onChord()"/>
+      </label>
+      <label><span class="k">solidity σ</span>
+        <input type="number" name="solidity" step="0.01" min="0.4" max="2.5" value="1.13688" onchange="onSigma()"/>
+      </label>
+    </div>
+    <div class="row">
+      <label><span class="k">n_blades_machine Z</span>
+        <input type="number" name="n_blades_machine" step="1" min="8" max="120" value="25" onchange="onZ()"/>
+      </label>
+      <label><span class="k">mean_radius_m r</span>
+        <input type="number" name="mean_radius_m" step="0.0005" min="0.01" max="0.5" value="0.0375" onchange="onZ()"/>
+      </label>
+    </div>
+    <div class="row3">
+      <label><span class="k">rt</span>
+        <input type="number" name="rotor_tip_radius_m" step="0.0005" value="0.04" onchange="onRadii()"/>
+      </label>
+      <label><span class="k">rh</span>
+        <input type="number" name="hub_radius_m" step="0.0005" value="0.035" onchange="onRadii()"/>
+      </label>
+      <label><span class="k">span_m</span>
+        <input type="number" name="span_m" step="0.0005" value="0.005" onchange="previewSoon()"/>
+      </label>
+    </div>
+    <div class="readout" id="pack_out">pitch —</div>
+  </fieldset>
+
+  <div>
+    <button class="primary" onclick="doPreview()">Preview mesh</button>
+    <button onclick="doMesh()">Mesh + checkMesh</button>
+    <button id="btn_solve" onclick="doSolve()">Solve (if OpenFOAM)</button>
+  </div>
+  <p class="hint">Every preview writes a real JSON and calls the body-fitted mesh writer. No 7-section theater. No fake solve.</p>
+</form>
+
+<div class="panel">
+  <div id="flags"></div>
+  <p id="status" class="hint">Load knobs, then Preview mesh. Outline must move when sagitta / t/c / Z moves.</p>
+  <img class="preview" id="png" alt="mesh preview" hidden/>
+  <div id="forces"></div>
+  <div id="err"></div>
+  <p class="hint">
+    Live Marlin 80 µs foil is <a href="/marlin.html">read-only plots</a> — not remeshed from this page.
+    Teammates: <code>./start.sh</code> then this URL. Windows: <code>start.ps1</code>; OpenFOAM via WSL.
+  </p>
+</div>
+</main>
+<script>
+const $ = (n) => document.querySelector(`[name="${n}"]`) || document.getElementById(n);
+let packingDriver = "sigma";
+let timer = null;
+let ofAvail = false;
+
+function num(name) { return parseFloat($(name).value); }
+function onFamily() {
+  const f = $("family").value;
+  document.getElementById("cup_box").hidden = f !== "impulse_bucket";
+  document.getElementById("foil_box").hidden = f !== "circular_arc_camber_metal_angles";
+  document.getElementById("pts_box").hidden = f !== "profile_points";
+  previewSoon();
+}
+function syncPackReadout() {
+  const c = num("chord_m"), sig = num("solidity"), Z = num("n_blades_machine"), rm = num("mean_radius_m");
+  const pitch = c / Math.max(sig, 1e-12);
+  const pitchZ = 2 * Math.PI * rm / Math.max(Z, 1);
+  const b1 = num("beta1_flow_deg"), b2 = num("beta2_flow_deg");
+  const stag = 0.5 * (b1 + b2);
+  document.getElementById("pack_out").textContent =
+    `pitch s = c/σ = ${pitch.toExponential(4)} m · 2π r/Z = ${pitchZ.toExponential(4)} m · stagger ½(β1+β2) = ${stag.toFixed(2)}°`;
+}
+function onSigma() { packingDriver = "sigma"; syncPackReadout(); previewSoon(); }
+function onZ() {
+  packingDriver = "z";
+  const c = num("chord_m"), Z = num("n_blades_machine"), rm = num("mean_radius_m");
+  const pitch = 2 * Math.PI * rm / Math.max(Z, 1);
+  $("solidity").value = (c / pitch).toFixed(6);
+  syncPackReadout();
+  previewSoon();
+}
+function onChord() { if (packingDriver === "z") onZ(); else onSigma(); }
+function onRadii() {
+  const rt = num("rotor_tip_radius_m"), rh = num("hub_radius_m");
+  $("span_m").value = (rt - rh).toFixed(6);
+  $("mean_radius_m").value = (0.5 * (rt + rh)).toFixed(6);
+  if (packingDriver === "z") onZ(); else { syncPackReadout(); previewSoon(); }
+}
+function payload() {
+  const f = $("family").value;
+  const body = {
+    profile_family: f,
+    chord_m: num("chord_m"),
+    solidity: num("solidity"),
+    n_blades_machine: parseInt($("n_blades_machine").value, 10),
+    mean_radius_m: num("mean_radius_m"),
+    rotor_tip_radius_m: num("rotor_tip_radius_m"),
+    hub_radius_m: num("hub_radius_m"),
+    span_m: num("span_m"),
+    packing_driver: packingDriver,
+    beta1_flow_deg: num("beta1_flow_deg"),
+    beta2_flow_deg: num("beta2_flow_deg"),
+    thickness_c: num("thickness_c"),
+    upper_sagitta_c: num("upper_sagitta_c"),
+    lower_sagitta_c: num("lower_sagitta_c"),
+    le_fillet_r_c: num("le_fillet_r_c"),
+    te_fillet_r_c: num("te_fillet_r_c"),
+  };
+  if (f === "profile_points") {
+    const raw = document.querySelector('[name="profile_points_text"]').value.trim();
+    body.profile_points = JSON.parse(raw);
+  }
+  return body;
+}
+function showErr(e) {
+  document.getElementById("err").innerHTML = e ? `<pre class="err">${e}</pre>` : "";
+}
+function flagsFrom(info) {
+  const bits = ['<span class="flag pred">PREDICTED</span>'];
+  if (info.ok) bits.push('<span class="flag ok">mesh written</span>');
+  if (info.mesh_ok === false) bits.push('<span class="flag bad">mesh_ok false</span>');
+  if (info.mesh_ok === true) bits.push('<span class="flag ok">mesh_ok</span>');
+  if (info.success === false) bits.push('<span class="flag bad">success false</span>');
+  if (info.climbing === true) bits.push('<span class="flag bad">climbing</span>');
+  if (info.climbing === false) bits.push('<span class="flag ok">not climbing</span>');
+  if (info.eta_from_cfd) bits.push('<span class="flag bad">eta from CFD — should be none</span>');
+  document.getElementById("flags").innerHTML = bits.join(" ");
+}
+function showPng(b64) {
+  const img = document.getElementById("png");
+  if (!b64) { img.hidden = true; return; }
+  img.src = "data:image/png;base64," + b64;
+  img.hidden = false;
+}
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok || j.ok === false) throw new Error(j.error || j.message || JSON.stringify(j));
+  return j;
+}
+function previewSoon() {
+  syncPackReadout();
+  clearTimeout(timer);
+  timer = setTimeout(doPreview, 700);
+}
+async function doPreview() {
+  showErr("");
+  document.getElementById("status").textContent = "remeshing…";
+  try {
+    const info = await post("/api/preview", payload());
+    flagsFrom(info);
+    showPng(info.png_b64);
+    document.getElementById("status").textContent =
+      `${info.family}  cells=${info.n_cells}  pitch=${Number(info.pitch_m).toExponential(4)} m  σ=${Number(info.solidity).toFixed(4)}  Z=${info.n_blades_machine}  area=${Number(info.poly_area_m2).toExponential(3)} m²`;
+  } catch (e) {
+    flagsFrom({ ok: false });
+    showErr(String(e.message || e));
+    document.getElementById("status").textContent = "preview failed (loud)";
+  }
+}
+async function doMesh() {
+  showErr("");
+  document.getElementById("status").textContent = "mesh + checkMesh…";
+  try {
+    const info = await post("/api/mesh", payload());
+    flagsFrom(info);
+    showPng(info.png_b64);
+    const extra = info.checkMesh ? ` checkMesh failed_checks=${info.checkMesh.failed_checks} ran=${info.checkMesh.ran}` : "";
+    document.getElementById("status").textContent =
+      `${info.family}  cells=${info.n_cells}  pitch=${Number(info.pitch_m).toExponential(4)} m${extra}`;
+    if (info.errors && info.errors.length) showErr(info.errors.join("\n"));
+  } catch (e) {
+    flagsFrom({ ok: false });
+    showErr(String(e.message || e));
+  }
+}
+async function doSolve() {
+  showErr("");
+  document.getElementById("status").textContent = "solve started (background)…";
+  document.getElementById("btn_solve").disabled = true;
+  try {
+    const start = await post("/api/solve", payload());
+    const id = start.job_id;
+    const poll = async () => {
+      const rec = await (await fetch("/api/job/" + id)).json();
+      if (rec.status === "running") { setTimeout(poll, 2000); return; }
+      document.getElementById("btn_solve").disabled = false;
+      const r = rec.result || rec;
+      if (rec.error) { showErr(rec.error + "\n" + (rec.traceback || "")); flagsFrom({ ok: false, success: false }); return; }
+      flagsFrom(r);
+      if (r.png_b64) showPng(r.png_b64);
+      const rows = (r.blades || []).map(b =>
+        `<tr><td>blade${b.blade_index}</td><td>${b.Ft_N}</td><td>${b.Fd_N}</td><td>PREDICTED</td><td>${b.climbing}</td></tr>`
+      ).join("");
+      document.getElementById("forces").innerHTML = rows
+        ? `<table><tr><th></th><th>Ft N</th><th>Fd N</th><th></th><th>climbing</th></tr>${rows}</table>
+           <p class="hint">PREDICTED. newtons_trusted=${r.newtons_trusted}. Not the live Marlin 31 N shot. No η from CFD.</p>`
+        : "";
+      if ((r.errors || []).length) showErr((r.errors || []).join("\n"));
+      document.getElementById("status").textContent = rec.message || "solve done";
+    };
+    poll();
+  } catch (e) {
+    document.getElementById("btn_solve").disabled = false;
+    showErr(String(e.message || e));
+  }
+}
+fetch("/api/health").then(r => r.json()).then(h => {
+  ofAvail = !!h.openfoam;
+  document.getElementById("btn_solve").disabled = !ofAvail;
+  if (!ofAvail) document.getElementById("btn_solve").title = "OpenFOAM v2412 not on this box — mesh-only still works";
+}).catch(() => {});
+syncPackReadout();
+onFamily();
+</script>
+</body>
+</html>

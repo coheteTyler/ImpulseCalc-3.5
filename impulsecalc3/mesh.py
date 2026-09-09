@@ -1,0 +1,1994 @@
+"""Body-fitted 2D O-grid cascade mesh → OpenFOAM polyMesh.
+
+O-grid: uniform-offset from the metal (wall-normal), n_around × n_radial.
+H-blocks: TFI from the offset ring to the pitch rectangle (inlet / cyclic /
+outlet). Three pitches are tiled and stitched. Stair-step is not the load path.
+Optional Cartesian dump is debug-only and is never written as the forces mesh.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from .geometry import (
+    BladeSpec,
+    center_in_pitch,
+    passage_gap,
+    polygon_centroid,
+    polygon_signed_area,
+    profile_from_job,
+    resample_open_arclength,
+    split_ps_ss,
+)
+from .job import pitch_m as cascade_pitch_m
+
+
+def _foam_header(cls: str, obj: str, note: str = "") -> str:
+    extra = f'\n    note        "{note}";' if note else ""
+    return (
+        "/*--------------------------------*- C++ -*----------------------------------*\\\n"
+        "| ImpulseCalc3 body-fitted cascade mesh                                       |\n"
+        "\\*---------------------------------------------------------------------------*/\n"
+        "FoamFile\n"
+        "{\n"
+        "    version     2.0;\n"
+        "    format      ascii;\n"
+        f"    class       {cls};\n"
+        f"    object      {obj};{extra}\n"
+        "}\n"
+        "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n"
+    )
+
+
+def _stretch(j: int, n: int, r: float) -> float:
+    if n <= 0:
+        return 0.0
+    if abs(r - 1.0) < 1e-9:
+        return j / n
+    return (r**j - 1.0) / (r**n - 1.0)
+
+
+def _resample(chain: list[tuple[float, float]], n_seg: int) -> list[tuple[float, float]]:
+    """n_seg segments → n_seg+1 points including both ends, even arc-length."""
+    if n_seg < 1 or len(chain) < 2:
+        return list(chain)
+    s = [0.0]
+    for i in range(1, len(chain)):
+        s.append(s[-1] + math.hypot(chain[i][0] - chain[i - 1][0], chain[i][1] - chain[i - 1][1]))
+    total = s[-1] if s[-1] > 0 else 1.0
+    out: list[tuple[float, float]] = []
+    for k in range(n_seg + 1):
+        target = total * k / n_seg
+        if target <= 0:
+            out.append(chain[0])
+            continue
+        if target >= total:
+            out.append(chain[-1])
+            continue
+        j = 0
+        while j < len(s) - 1 and s[j + 1] < target:
+            j += 1
+        span = s[j + 1] - s[j] or 1e-16
+        t = (target - s[j]) / span
+        x = chain[j][0] + t * (chain[j + 1][0] - chain[j][0])
+        y = chain[j][1] + t * (chain[j + 1][1] - chain[j][1])
+        out.append((x, y))
+    return out
+
+
+def _chain_ccw(pts: list[tuple[float, float]], i0: int, i1: int) -> list[tuple[float, float]]:
+    n = len(pts)
+    out = []
+    i = i0
+    guard = 0
+    while True:
+        out.append(pts[i])
+        if i == i1:
+            break
+        i = (i + 1) % n
+        guard += 1
+        if guard > n + 2:
+            break
+    return out
+
+
+def outer_rectangle(
+    x_in: float,
+    x_out: float,
+    y_bot: float,
+    y_top: float,
+    n_bot: int,
+    n_out: int,
+    n_top: int,
+    n_in: int,
+) -> tuple[np.ndarray, dict[str, tuple[int, int]]]:
+    """CCW points around the pitch rectangle, starting at SW. n_* are cell counts."""
+    xs_bot = np.linspace(x_in, x_out, n_bot + 1)
+    ys_out = np.linspace(y_bot, y_top, n_out + 1)
+    xs_top = np.linspace(x_out, x_in, n_top + 1)
+    ys_in = np.linspace(y_top, y_bot, n_in + 1)
+    pts: list[tuple[float, float]] = []
+    for i in range(n_bot):
+        pts.append((float(xs_bot[i]), y_bot))
+    for i in range(n_out):
+        pts.append((x_out, float(ys_out[i])))
+    for i in range(n_top):
+        pts.append((float(xs_top[i]), y_top))
+    for i in range(n_in):
+        pts.append((x_in, float(ys_in[i])))
+    ranges = {
+        "bottom": (0, n_bot),
+        "outlet": (n_bot, n_bot + n_out),
+        "top": (n_bot + n_out, n_bot + n_out + n_top),
+        "inlet": (n_bot + n_out + n_top, n_bot + n_out + n_top + n_in),
+    }
+    return np.array(pts, dtype=float), ranges
+
+
+def inner_from_profile(
+    poly: list[tuple[float, float]],
+    outer: np.ndarray,
+    ranges: dict[str, tuple[int, int]],
+) -> np.ndarray:
+    """Match 4 blade sectors to the 4 rectangle sides (CCW, same index)."""
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    splits: list[int] = []
+    used: set[int] = set()
+    corner_idx = [ranges[name][0] for name in ("bottom", "outlet", "top", "inlet")]
+    for ci in corner_idx:
+        ox, oy = outer[ci]
+        cx, cy = polygon_centroid(pts)
+        dx, dy = ox - cx, oy - cy
+        best_i, best_dot = 0, -1e99
+        for i, (x, y) in enumerate(pts):
+            if i in used:
+                continue
+            dot = (x - cx) * dx + (y - cy) * dy
+            if dot > best_dot:
+                best_dot, best_i = dot, i
+        splits.append(best_i)
+        used.add(best_i)
+    side_names = ("bottom", "outlet", "top", "inlet")
+    # Shorter-arc / geometric-side TFI: pick the arc that actually sits on that AABB side.
+    pts_arr = np.array(pts, dtype=float)
+    side_axis = {"bottom": (1, False), "outlet": (0, True), "top": (1, True), "inlet": (0, False)}
+    inner: list[tuple[float, float]] = []
+    for k, name in enumerate(side_names):
+        i0 = splits[k]
+        i1 = splits[(k + 1) % 4]
+        axis, want_max = side_axis[name]
+        idx = _arc_choose(pts_arr, i0, i1, axis, want_max)
+        chain = [pts[i] for i in idx]
+        n_seg = ranges[name][1] - ranges[name][0]
+        samp = _resample(chain, n_seg)
+        inner.extend(samp[:-1])
+    if len(inner) != len(outer):
+        raise RuntimeError(f"inner/outer count mismatch {len(inner)} vs {len(outer)}")
+    return np.array(inner, dtype=float)
+
+
+def inner_match_by_angle(poly: list[tuple[float, float]], outer: np.ndarray) -> np.ndarray:
+    """One inner point per outer AABB node, matched by polar angle from centroid.
+
+    4-side AABB sector mapping put the whole east side on the TE (and west on
+    the LE). Those fans are the checkMesh quality hole. Angle matching shares
+    the rectangle among LE/SS/TE/PS.
+    """
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    if polygon_signed_area(pts) < 0:
+        pts = list(reversed(pts))
+    cx, cy = polygon_centroid(pts)
+    n_out = int(outer.shape[0])
+    n_in = len(pts)
+    ang_in = np.arctan2(np.array([p[1] - cy for p in pts]), np.array([p[0] - cx for p in pts]))
+    # unwrap along the closed loop so search is monotonic
+    unw = ang_in.copy()
+    for i in range(1, n_in):
+        d = unw[i] - unw[i - 1]
+        if d > np.pi:
+            unw[i:] -= 2 * np.pi
+        elif d < -np.pi:
+            unw[i:] += 2 * np.pi
+    inner = np.zeros((n_out, 2), dtype=float)
+    # start at outer[0] nearest inner
+    a0 = math.atan2(outer[0, 1] - cy, outer[0, 0] - cx)
+    i0 = int(np.argmin(np.abs(((ang_in - a0 + np.pi) % (2 * np.pi)) - np.pi)))
+    # walk outer; pick inner by closest unwrapped angle, locally
+    j = i0
+    for k in range(n_out):
+        ao = math.atan2(outer[k, 1] - cy, outer[k, 0] - cx)
+        best_j, best_d = j, 1e99
+        for dj in range(-n_in // 4, n_in // 4 + 1):
+            jj = (j + dj) % n_in
+            d = abs(((ang_in[jj] - ao + np.pi) % (2 * np.pi)) - np.pi)
+            if d < best_d:
+                best_d, best_j = d, jj
+        inner[k] = pts[best_j]
+        j = best_j
+    return inner
+
+
+def inner_match_by_arclength(poly: list[tuple[float, float]], outer: np.ndarray) -> np.ndarray:
+    """Even metal arc-length, start at the node nearest AABB SW.
+
+    Polar angle matching on a cup puts a chord-long inner edge on the SW AABB
+    wrap (checkMesh skew 4.68). Arc-length deletes that wrap jump.
+    """
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    if polygon_signed_area(pts) < 0:
+        pts = list(reversed(pts))
+    n_out = int(outer.shape[0])
+    ox, oy = float(outer[0, 0]), float(outer[0, 1])
+    i0 = min(range(len(pts)), key=lambda i: (pts[i][0] - ox) ** 2 + (pts[i][1] - oy) ** 2)
+    rot = pts[i0:] + pts[:i0]
+    samp = _resample(rot + [rot[0]], n_out)
+    return np.array(samp[:-1], dtype=float)
+
+
+def build_pitch_ogrid(
+    inner: np.ndarray,
+    outer: np.ndarray,
+    n_radial: int,
+    stretch: float,
+) -> np.ndarray:
+    """pts[i, j, 2] with j=0 wall, j=n_radial outer. i periodic."""
+    n_i = inner.shape[0]
+    pts = np.zeros((n_i, n_radial + 1, 2), dtype=float)
+    for j in range(n_radial + 1):
+        t = _stretch(j, n_radial, stretch)
+        pts[:, j, :] = (1.0 - t) * inner + t * outer
+    return pts
+
+
+def build_hybrid_aabb_ogrid(
+    inner: np.ndarray,
+    outer: np.ndarray,
+    n_radial: int,
+    stretch: float,
+    d_off: float,
+) -> np.ndarray:
+    """Near-wall layers follow a wall-normal offset; outer layers morph to the AABB.
+
+    Distortion from the AABB corners is pushed off the metal (wall Cp). Outer ring
+    stays AABB so Cartesian H-blocks still conformal-stitch (including cyclics).
+    """
+    n_i = inner.shape[0]
+    pts = np.zeros((n_i, n_radial + 1, 2), dtype=float)
+    pts[:, 0, :] = inner
+    pts[:, -1, :] = outer
+    off = offset_closed(inner, max(d_off, 1e-9), n_smooth=12)
+    # Morph only the last 1–2 layers onto the AABB. The old 45% morph was the
+    # LE/TE non-ortho / pyramid / skew hole (checkMesh failed_checks=3).
+    j_off = max(n_radial - 2, 2)
+    j_off = min(j_off, n_radial - 1)
+    for j in range(1, n_radial):
+        if j <= j_off:
+            t = _stretch(j, j_off, stretch)
+            pts[:, j, :] = (1.0 - t) * inner + t * off
+        else:
+            t = (j - j_off) / max(n_radial - j_off, 1)
+            pts[:, j, :] = (1.0 - t) * off + t * outer
+    return pts
+
+
+def _relax_last_morph(pts: np.ndarray) -> np.ndarray:
+    """If the AABB morph layer inverted a column, pull that column back toward the offset.
+
+    Wall (j=0) and AABB outer stay put. Used after arc-length inner, which can
+    leave a few last-layer folds at SE/SW while deleting the fat SW wrap edge.
+    """
+    n_i, n_j, _ = pts.shape
+    out = pts.copy()
+    if n_j < 4:
+        return out
+    j0 = n_j - 3
+    jm = n_j - 2
+    tcol = np.full(n_i, 0.5)
+    for _ in range(24):
+        if min_cell_area_2d(out) > 0:
+            return out
+        for i in range(n_i):
+            i2 = (i + 1) % n_i
+            a_m = _quad_area(out[i, j0], out[i2, j0], out[i2, jm], out[i, jm])
+            a_o = _quad_area(out[i, jm], out[i2, jm], out[i2, -1], out[i, -1])
+            if a_m > 0 and a_o > 0:
+                continue
+            tcol[i] *= 0.5
+            tcol[i2] *= 0.5
+            out[i, jm] = (1.0 - tcol[i]) * out[i, j0] + tcol[i] * out[i, -1]
+            out[i2, jm] = (1.0 - tcol[i2]) * out[i2, j0] + tcol[i2] * out[i2, -1]
+    return out
+
+
+
+def _square_aabb_wraps(pts: np.ndarray, n_cyc: int = 0, n_out: int = 0) -> np.ndarray:
+    """Last morph layer: wrap columns at AABB corners become a rectangle.
+
+    Outer AABB nodes stay put so Cartesian H-blocks still stitch.
+    """
+    n_i, n_j, _ = pts.shape
+    if n_j < 3:
+        return pts
+    out = pts.copy()
+    ring = out[:, -1, :]
+    xmin, xmax = float(ring[:, 0].min()), float(ring[:, 0].max())
+    ymin, ymax = float(ring[:, 1].min()), float(ring[:, 1].max())
+    targets = [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+    used: set[int] = set()
+    corners: list[int] = []
+    for tx, ty in targets:
+        best_i, best_d = 0, 1e99
+        for i in range(n_i):
+            if i in used:
+                continue
+            d = (ring[i, 0] - tx) ** 2 + (ring[i, 1] - ty) ** 2
+            if d < best_d:
+                best_d, best_i = d, i
+        corners.append(best_i)
+        used.add(best_i)
+    jm = n_j - 2
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    for ic in corners:
+        ip = (ic - 1) % n_i
+        C = ring[ic]
+        W = ring[ip]
+        sx = 1.0 if cx > C[0] else -1.0
+        sy = 1.0 if cy > C[1] else -1.0
+        side = max(float(np.hypot(W[0] - C[0], W[1] - C[1])), 1e-9)
+        # Interior of wrap columns sit on the inward square; AABB outer unchanged.
+        if abs(W[0] - C[0]) < abs(W[1] - C[1]):
+            out[ip, jm, 0] = C[0] + sx * side
+            out[ip, jm, 1] = W[1]
+            out[ic, jm, 0] = C[0] + sx * side
+            out[ic, jm, 1] = C[1]
+        else:
+            out[ip, jm, 0] = W[0]
+            out[ip, jm, 1] = C[1] + sy * side
+            out[ic, jm, 0] = C[0]
+            out[ic, jm, 1] = C[1] + sy * side
+    return out
+
+
+def _quad_area(a, b, c, d) -> float:
+    return 0.5 * (
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        + (c[0] - a[0]) * (d[1] - a[1]) - (c[1] - a[1]) * (d[0] - a[0])
+    )
+
+
+def min_cell_area_2d(pts: np.ndarray) -> float:
+    n_i, n_j, _ = pts.shape
+    amin = 1e99
+    for i in range(n_i):
+        i2 = (i + 1) % n_i
+        for j in range(n_j - 1):
+            a = _quad_area(pts[i, j], pts[i2, j], pts[i2, j + 1], pts[i, j + 1])
+            if a < amin:
+                amin = a
+    return float(amin)
+
+
+def min_cell_area_2d_rect(pts: np.ndarray) -> float:
+    ni, nj, _ = pts.shape
+    amin = 1e99
+    for i in range(ni - 1):
+        for j in range(nj - 1):
+            a = _quad_area(pts[i, j], pts[i + 1, j], pts[i + 1, j + 1], pts[i, j + 1])
+            if a < amin:
+                amin = a
+    return float(amin)
+
+
+def cartesian_block(x0: float, x1: float, y0: float, y1: float, nx: int, ny: int) -> np.ndarray:
+    xs = np.linspace(x0, x1, nx + 1)
+    ys = np.linspace(y0, y1, ny + 1)
+    return cartesian_block_xy(xs, ys)
+
+
+def cartesian_block_xy(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """Axis-aligned H-block with prescribed edge spacings (still Cartesian)."""
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    pts = np.zeros((xs.shape[0], ys.shape[0], 2), dtype=float)
+    pts[:, :, 0] = xs[:, None]
+    pts[:, :, 1] = ys[None, :]
+    return pts
+
+
+def _aabb_sides(outer: np.ndarray, n_cyc: int, n_out: int, n_in: int):
+    """Inclusive SW→SE, SE→NE, NE→NW, NW→SW (corners duplicated on adjacent sides)."""
+    i_se = n_cyc
+    i_ne = n_cyc + n_out
+    i_nw = n_cyc + n_out + n_cyc
+    south = outer[0 : i_se + 1].copy()
+    east = outer[i_se : i_ne + 1].copy()
+    north = outer[i_ne : i_nw + 1].copy()
+    west = np.concatenate([outer[i_nw:], outer[0:1]], axis=0).copy()
+    if west.shape[0] != n_in + 1:
+        raise RuntimeError(f"west side {west.shape[0]} != n_in+1={n_in+1}")
+    return south, east, north, west
+
+
+def _ring_from_aabb_sides(south, east, north, west) -> np.ndarray:
+    return np.concatenate([south[:-1], east[:-1], north[:-1], west[:-1]], axis=0)
+
+
+def _metal_ccw_mid(
+    poly: list[tuple[float, float]], p0: np.ndarray, p1: np.ndarray
+) -> np.ndarray:
+    """Arc-length midpoint on the CCW metal walk from p0 toward p1."""
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    if polygon_signed_area(pts) < 0:
+        pts = list(reversed(pts))
+    def nearest(p):
+        return min(range(len(pts)), key=lambda i: (pts[i][0] - p[0]) ** 2 + (pts[i][1] - p[1]) ** 2)
+    i0, i1 = nearest(p0), nearest(p1)
+    chain = _chain_ccw(pts, i0, i1)
+    if len(chain) < 2:
+        return 0.5 * (np.asarray(p0, dtype=float) + np.asarray(p1, dtype=float))
+    samp = _resample([(float(p[0]), float(p[1])) for p in chain], 2)
+    return np.array(samp[1], dtype=float)
+
+
+def split_aabb_wrap_edges(
+    inner: np.ndarray,
+    outer: np.ndarray,
+    poly: list[tuple[float, float]],
+    n_cyc: int,
+    n_out: int,
+    n_in: int,
+    *,
+    max_ratio: float = 1.6,
+    max_add: int = 16,
+) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], int, int]:
+    """Delete fat SW/SE AABB wrap cells by splitting them on the AABB legs.
+
+    Angle matching on a cup puts a ~chord-long inner edge on the SW (and SE)
+    AABB corner cell — that face is checkMesh skew > 4. Insert CCW metal
+    midpoints; outer nodes stay on the AABB (H-blocks remain Cartesian).
+    Does not restore offset-O + TFI H.
+    """
+    south, east, north, west = _aabb_sides(outer, n_cyc, n_out, n_in)
+    inner = inner.copy()
+    added = 0
+    n_cyc_u, n_out_u, n_in_u = n_cyc, n_out, n_in
+    while added < max_add:
+        ring_o = _ring_from_aabb_sides(south, east, north, west)
+        if inner.shape[0] != ring_o.shape[0]:
+            raise RuntimeError("inner/outer mismatch while splitting AABB wrap")
+        n = inner.shape[0]
+        ds = np.array(
+            [
+                float(np.hypot(inner[(i + 1) % n, 0] - inner[i, 0], inner[(i + 1) % n, 1] - inner[i, 1]))
+                for i in range(n)
+            ]
+        )
+        med = float(np.median(ds)) or 1e-16
+        i = int(np.argmax(ds))
+        n_s = south.shape[0] - 1
+        n_e = east.shape[0] - 1
+        n_n = north.shape[0] - 1
+        # Only split west/east legs (SW/SE AABB wrap). South/north must stay
+        # equal-count so cyclic x-nodes pair.
+        order = np.argsort(-ds)
+        picked = None
+        for cand in order:
+            if ds[cand] <= max_ratio * med:
+                break
+            if n_s <= cand < n_s + n_e or cand >= n_s + n_e + n_n:
+                picked = int(cand)
+                break
+        if picked is None:
+            break
+        i = picked
+        i2 = (i + 1) % n
+        q0, q1 = ring_o[i], ring_o[i2]
+        mid_out = 0.5 * (q0 + q1)
+        if abs(q0[0] - q1[0]) < 1e-14:
+            mid_out[0] = q0[0]
+        elif abs(q0[1] - q1[1]) < 1e-14:
+            mid_out[1] = q0[1]
+        if n_s <= i < n_s + n_e:
+            east = np.insert(east, i - n_s + 1, mid_out, axis=0)
+            n_out_u += 1
+        else:
+            west = np.insert(west, i - n_s - n_e - n_n + 1, mid_out, axis=0)
+            n_in_u += 1
+        added += 1
+        # Re-pair metal by polar angle on the refined AABB. Inserting metal
+        # midpoints independently crossed radials (folded last-layer quads).
+        outer = _ring_from_aabb_sides(south, east, north, west)
+        inner = inner_match_by_angle(poly, outer)
+    outer = _ring_from_aabb_sides(south, east, north, west)
+    if inner.shape[0] != outer.shape[0]:
+        inner = inner_match_by_angle(poly, outer)
+    return inner, outer, (south, east, north, west), added, n_in_u
+
+
+def tfi_block(
+    south: np.ndarray,
+    north: np.ndarray,
+    west: np.ndarray,
+    east: np.ndarray,
+) -> np.ndarray:
+    """Bilinear TFI. south/north: (nx+1, 2); west/east: (ny+1, 2)."""
+    nx = south.shape[0] - 1
+    ny = west.shape[0] - 1
+    if north.shape[0] != nx + 1 or east.shape[0] != ny + 1:
+        raise RuntimeError(
+            f"TFI edge mismatch south={south.shape} north={north.shape} "
+            f"west={west.shape} east={east.shape}"
+        )
+    pts = np.zeros((nx + 1, ny + 1, 2), dtype=float)
+    for i in range(nx + 1):
+        xi = 0.0 if nx == 0 else i / nx
+        for j in range(ny + 1):
+            eta = 0.0 if ny == 0 else j / ny
+            pts[i, j] = (
+                (1 - eta) * south[i]
+                + eta * north[i]
+                + (1 - xi) * west[j]
+                + xi * east[j]
+                - (1 - xi) * (1 - eta) * south[0]
+                - xi * (1 - eta) * south[-1]
+                - (1 - xi) * eta * north[0]
+                - xi * eta * north[-1]
+            )
+    return pts
+
+
+def resample_closed(poly: list[tuple[float, float]], n: int) -> np.ndarray:
+    """n points around a closed polygon, even arc-length, no duplicate wrap."""
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    chain = pts + [pts[0]]
+    samp = _resample(chain, n)
+    return np.array(samp[:-1], dtype=float)
+
+
+def offset_closed(inner: np.ndarray, dist: float, n_smooth: int = 8) -> np.ndarray:
+    """Outward offset of a CCW closed loop (fluid is outside / right of walk)."""
+    n = inner.shape[0]
+    normals = np.zeros_like(inner)
+    for i in range(n):
+        p0 = inner[(i - 1) % n]
+        p1 = inner[i]
+        p2 = inner[(i + 1) % n]
+        e1 = p1 - p0
+        e2 = p2 - p1
+        l1 = float(np.hypot(e1[0], e1[1])) or 1e-16
+        l2 = float(np.hypot(e2[0], e2[1])) or 1e-16
+        # Right-normal of CCW walk = outward.
+        n1 = np.array([e1[1] / l1, -e1[0] / l1])
+        n2 = np.array([e2[1] / l2, -e2[0] / l2])
+        nn = n1 + n2
+        ln = float(np.hypot(nn[0], nn[1])) or 1e-16
+        normals[i] = nn / ln
+    for _ in range(n_smooth):
+        normals = 0.5 * normals + 0.25 * np.roll(normals, 1, axis=0) + 0.25 * np.roll(normals, -1, axis=0)
+        ln = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = normals / np.clip(ln, 1e-16, None)
+    return inner + dist * normals
+
+
+def smooth_ogrid(pts: np.ndarray, n_iter: int = 50, omega: float = 0.55) -> np.ndarray:
+    """Laplacian smooth of interior radial layers. Wall and outer ring stay put."""
+    n_i, n_j, _ = pts.shape
+    cur = pts.copy()
+    for _ in range(n_iter):
+        new = cur.copy()
+        for j in range(1, n_j - 1):
+            avg = 0.25 * (
+                np.roll(cur[:, j, :], 1, axis=0)
+                + np.roll(cur[:, j, :], -1, axis=0)
+                + cur[:, j - 1, :]
+                + cur[:, j + 1, :]
+            )
+            new[:, j, :] = (1.0 - omega) * cur[:, j, :] + omega * avg
+        new[:, 0, :] = pts[:, 0, :]
+        new[:, -1, :] = pts[:, -1, :]
+        cur = new
+    return cur
+
+
+def smooth_block(pts: np.ndarray, n_iter: int = 20, omega: float = 0.5) -> np.ndarray:
+    """Laplacian smooth of a structured block, boundary nodes fixed."""
+    ni, nj, _ = pts.shape
+    cur = pts.copy()
+    for _ in range(n_iter):
+        new = cur.copy()
+        for i in range(1, ni - 1):
+            for j in range(1, nj - 1):
+                avg = 0.25 * (cur[i - 1, j] + cur[i + 1, j] + cur[i, j - 1] + cur[i, j + 1])
+                new[i, j] = (1.0 - omega) * cur[i, j] + omega * avg
+        cur = new
+    return cur
+
+
+def _corner_indices(ring: np.ndarray) -> tuple[int, int, int, int]:
+    """SW, SE, NE, NW indices on a closed ring (geometric AABB corners)."""
+    x, y = ring[:, 0], ring[:, 1]
+    xmin, xmax = float(x.min()), float(x.max())
+    ymin, ymax = float(y.min()), float(y.max())
+    targets = [
+        (xmin, ymin),
+        (xmax, ymin),
+        (xmax, ymax),
+        (xmin, ymax),
+    ]
+    used: set[int] = set()
+    out: list[int] = []
+    for tx, ty in targets:
+        best_i, best_d = 0, 1e99
+        for i in range(ring.shape[0]):
+            if i in used:
+                continue
+            d = (ring[i, 0] - tx) ** 2 + (ring[i, 1] - ty) ** 2
+            if d < best_d:
+                best_d, best_i = d, i
+        out.append(best_i)
+        used.add(best_i)
+    return out[0], out[1], out[2], out[3]
+
+
+def _arc_indices(n: int, i0: int, i1: int) -> list[int]:
+    """Inclusive i0 → i1 walking +i modulo n."""
+    out = [i0]
+    i = i0
+    guard = 0
+    while i != i1:
+        i = (i + 1) % n
+        out.append(i)
+        guard += 1
+        if guard > n + 2:
+            break
+    return out
+
+
+def _arc_choose(ring: np.ndarray, i0: int, i1: int, axis: int, want_max: bool) -> list[int]:
+    """Pick the i0→i1 arc whose mean coordinate is the geometric side."""
+    n = int(ring.shape[0])
+    fwd = _arc_indices(n, i0, i1)
+    bak = [i0]
+    i = i0
+    guard = 0
+    while i != i1:
+        i = (i - 1) % n
+        bak.append(i)
+        guard += 1
+        if guard > n + 2:
+            break
+
+    def mean(idx: list[int]) -> float:
+        return float(ring[idx, axis].mean())
+
+    if want_max:
+        return fwd if mean(fwd) >= mean(bak) else bak
+    return fwd if mean(fwd) <= mean(bak) else bak
+
+
+def _lin(p0: np.ndarray, p1: np.ndarray, n_seg: int) -> np.ndarray:
+    p0 = np.asarray(p0, dtype=float).reshape(2)
+    p1 = np.asarray(p1, dtype=float).reshape(2)
+    t = np.linspace(0.0, 1.0, n_seg + 1)[:, None]
+    return (1.0 - t) * p0[None, :] + t * p1[None, :]
+
+
+def _force_mono_x(pts: np.ndarray) -> np.ndarray:
+    xs = np.asarray(pts[:, 0], dtype=float).copy()
+    for i in range(1, xs.shape[0]):
+        if xs[i] <= xs[i - 1]:
+            xs[i] = xs[i - 1] + 1e-10
+    out = pts.copy()
+    out[:, 0] = xs
+    return out
+
+
+def _arclen_frac_index(idx: list[int], ring: np.ndarray, frac: float) -> int:
+    s = [0.0]
+    for k in range(1, len(idx)):
+        p, q = ring[idx[k - 1]], ring[idx[k]]
+        s.append(s[-1] + float(np.hypot(q[0] - p[0], q[1] - p[1])))
+    tot = s[-1] if s[-1] > 0 else 1.0
+    target = float(frac) * tot
+    return int(min(range(len(s)), key=lambda i: abs(s[i] - target)))
+
+
+def _down_u_splits(ring: np.ndarray):
+    """Tips, cavity (Lt→Rt CCW), outer (Rt→Lt CCW), inner 22/78% corners, outer high-band.
+
+    Returns None if the profile is not a down-opening U with a real cavity.
+    """
+    n = int(ring.shape[0])
+    if n < 16:
+        return None
+    cx = 0.5 * (float(ring[:, 0].min()) + float(ring[:, 0].max()))
+    left = np.where(ring[:, 0] < cx)[0]
+    right = np.where(ring[:, 0] >= cx)[0]
+    if left.size < 4 or right.size < 4:
+        return None
+    iLt = int(left[np.argmin(ring[left, 1])])
+    iRt = int(right[np.argmin(ring[right, 1])])
+    inner = _arc_indices(n, iLt, iRt)
+    outer = _arc_indices(n, iRt, iLt)
+    if float(ring[inner, 1].max()) > float(ring[outer, 1].max()) + 1e-12:
+        # CCW Lt→Rt was the back, not the cavity
+        return None
+    yspan = float(ring[:, 1].max() - ring[:, 1].min())
+    xspan = float(ring[:, 0].max() - ring[:, 0].min())
+    ymin = float(ring[:, 1].min())
+    depth = float(ring[inner, 1].max() - min(ring[iLt, 1], ring[iRt, 1]))
+    # Two bottom tips (pointed U). A camber foil has one PS min-y, not twin stems.
+    if yspan <= 1e-16 or depth < 0.15 * yspan:
+        return None
+    if abs(ring[iLt, 0] - ring[iRt, 0]) < 0.25 * max(xspan, 1e-16):
+        return None
+    if float(ring[iLt, 1]) > ymin + 0.08 * yspan or float(ring[iRt, 1]) > ymin + 0.08 * yspan:
+        return None
+    kNW = _arclen_frac_index(inner, ring, 0.22)
+    kNE = _arclen_frac_index(inner, ring, 0.78)
+    if not (1 <= kNW < kNE <= len(inner) - 2):
+        return None
+    xs = ring[outer, 0]
+    ys = ring[outer, 1]
+    kE = int(np.argmax(xs + ys))
+    kW = int(np.argmax(-xs + ys))
+    ymax = float(ys.max())
+    ks = np.where(ys >= 0.92 * ymax)[0]
+    if ks.size >= 3:
+        kE_top, kW_top = int(ks[0]), int(ks[-1])
+    else:
+        kTop = int(np.argmax(ys))
+        kE_top = max(kE + 1, kTop - max(2, len(outer) // 20))
+        kW_top = min(kW - 1, kTop + max(2, len(outer) // 20))
+    if not (1 <= kE < kE_top < kW_top < kW <= len(outer) - 2):
+        return None
+    return {
+        "iLt": iLt,
+        "iRt": iRt,
+        "inner": inner,
+        "outer": outer,
+        "kNW": kNW,
+        "kNE": kNE,
+        "kE": kE,
+        "kW": kW,
+        "kE_top": kE_top,
+        "kW_top": kW_top,
+        "depth": depth,
+        "yspan": yspan,
+    }
+
+
+def profile_has_cavity(poly: list[tuple[float, float]]) -> bool:
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    if polygon_signed_area(pts) < 0:
+        pts = list(reversed(pts))
+    ring = np.array(pts, dtype=float)
+    return _down_u_splits(ring) is not None
+
+
+
+def _le_te_side_arcs(ring: np.ndarray, west_frac: float = 0.14, east_frac: float = 0.14):
+    """Four CCW metal arcs: west=LE, north=SS, east=TE, south=PS.
+
+    AABB-nearest domain corners pin NE and SE both at TE (3–7 point fans) —
+    that is the checkMesh non-ortho / pyramid / skew hole. Corners sit a
+    fixed fraction off LE (min x) and TE (max x). Walk is metal-CCW.
+    """
+    n = int(ring.shape[0])
+    iW = int(np.argmin(ring[:, 0]))
+    iE = int(np.argmax(ring[:, 0]))
+    nw = max(10, int(west_frac * n))
+    ne = max(10, int(east_frac * n))
+    iSW = (iW - nw // 2) % n
+    iNW = (iW + (nw - nw // 2)) % n
+    iNE = (iE - ne // 2) % n
+    iSE = (iE + (ne - ne // 2)) % n
+    west = _arc_indices(n, iSW, iNW)
+    north = _arc_indices(n, iNW, iNE)
+    east = _arc_indices(n, iNE, iSE)
+    south = _arc_indices(n, iSE, iSW)
+    return south, east, north, west
+
+
+def _untangle_block(hb: np.ndarray, n_pass: int = 10) -> np.ndarray:
+    """Laplacian interior only. Boundary (O-ring / pitch rectangle) stays put."""
+    cur = hb.copy()
+    for _ in range(n_pass):
+        cur = smooth_block(cur, n_iter=8, omega=0.5)
+        if min_cell_area_2d_rect(cur) > 0:
+            return cur
+    return cur
+
+
+def _pos_block(hb: np.ndarray, name: str) -> np.ndarray:
+    """Orientation with strictly positive min 2D area. No pinched-quad waiver.
+
+    Do not Laplacian-untangle a block that is already positive: thin north
+    layers (offset back almost on the cyclic) invert under that smoother.
+    """
+    amin0 = min_cell_area_2d_rect(hb)
+    if amin0 > 0:
+        return hb
+    hb = _untangle_block(hb)
+    cands = (hb, hb[:, ::-1, :].copy(), hb[::-1, :, :].copy(), hb[::-1, ::-1, :].copy())
+    best = max(cands, key=min_cell_area_2d_rect)
+    amin = min_cell_area_2d_rect(best)
+    if amin <= 0:
+        raise RuntimeError(f"folded H-block {name} min_area={amin:.3e}")
+    return best
+
+
+def _resample_xy(chain_idx: list[int], ring: np.ndarray, n_seg: int) -> np.ndarray:
+    pts = [tuple(ring[i]) for i in chain_idx]
+    return np.array(_resample(pts, n_seg), dtype=float)
+
+
+def _ring_corners_to_domain(ring: np.ndarray, x_in: float, x_out: float, y_bot: float, y_top: float):
+    """SW, SE, NE, NW indices on a closed ring, nearest to the pitch-rectangle corners."""
+    targets = [(x_in, y_bot), (x_out, y_bot), (x_out, y_top), (x_in, y_top)]
+    used: set[int] = set()
+    out: list[int] = []
+    for tx, ty in targets:
+        best_i, best_d = 0, 1e99
+        for i in range(ring.shape[0]):
+            if i in used:
+                continue
+            d = (ring[i, 0] - tx) ** 2 + (ring[i, 1] - ty) ** 2
+            if d < best_d:
+                best_d, best_i = d, i
+        out.append(best_i)
+        used.add(best_i)
+    return out[0], out[1], out[2], out[3]
+
+
+
+
+
+def _project_to_seg(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    v = b - a
+    den = float(np.dot(v, v))
+    if den < 1e-30:
+        return np.asarray(a, dtype=float).copy()
+    t = float(np.clip(np.dot(p - a, v) / den, 0.0, 1.0))
+    return a + t * v
+
+
+def te_wake_block(
+    ogrid: np.ndarray,
+    te_wall: np.ndarray,
+    te_outer: np.ndarray,
+) -> np.ndarray:
+    """TE wake H; TE nodes projected onto cut chords (unkinked, n_span=2)."""
+    e0 = np.asarray(ogrid[0], dtype=float).copy()
+    e1 = np.asarray(ogrid[-1], dtype=float).copy()
+    tw = np.asarray(te_wall, dtype=float).reshape(2)
+    to = np.asarray(te_outer, dtype=float).reshape(2)
+    south = np.stack([e0[0], tw, e1[0]], axis=0)
+    north = np.stack([e0[-1], to, e1[-1]], axis=0)
+    hb = tfi_block(south, north, e0, e1)
+    if min_cell_area_2d_rect(hb) <= 0:
+        hb = tfi_block(south, north, e1, e0)
+    if min_cell_area_2d_rect(hb) <= 0:
+        hb = tfi_block(north, south, e0, e1)
+    if min_cell_area_2d_rect(hb) <= 0:
+        hb = tfi_block(north, south, e1, e0)
+    return _pos_block(hb, "te_wake")
+
+
+def _snap_points(hb: np.ndarray, mapping: list[tuple[np.ndarray, np.ndarray]], eps: float = 1e-7) -> np.ndarray:
+    """Move any block node near src onto dst (TE → chord projection)."""
+    out = np.asarray(hb, dtype=float).copy()
+    flat = out.reshape(-1, 2)
+    for src_p, dst_p in mapping:
+        d = np.linalg.norm(flat - src_p, axis=1)
+        flat[d < eps] = dst_p
+    return out
+
+
+def build_offset_oh(
+    poly0: list[tuple[float, float]],
+    *,
+    x_in: float,
+    x_out: float,
+    y_bot: float,
+    y_top: float,
+    n_in: int,
+    n_out: int,
+    n_cyc: int,
+    n_rad: int,
+    n_fill: int,
+    stretch: float,
+    d_o: float,
+    n_out_x: int | None = None,
+) -> tuple[np.ndarray, list[np.ndarray], float, list[str]]:
+    """Offset O-collar + cavity TFI + outer TFI H-blocks to the pitch rectangle.
+
+    Long pointed stems make AABB-morph O-cells cross the U (duplicate verts,
+    zero-area faces, 1e145 skew). The cavity is its own H-block; outer H-blocks
+    only see the convex back and the mouth chord. Cyclic top/bottom share x.
+    """
+    notes: list[str] = []
+    n_out_x = int(n_out_x or n_out)
+    n_hi = max(4 * (2 * n_cyc + n_in + n_out), 400)
+    inner_hi = resample_closed(poly0, n_hi)
+    if polygon_signed_area([(float(x), float(y)) for x, y in inner_hi]) < 0:
+        inner_hi = inner_hi[::-1].copy()
+    d_use = float(d_o)
+    outer_hi = None
+    for _try in range(8):
+        cand = offset_closed(inner_hi, d_use, n_smooth=16)
+        if float(cand[:, 1].min()) > y_bot + 1e-6 and float(cand[:, 1].max()) < y_top - 1e-6:
+            outer_hi = cand
+            break
+        d_use *= 0.6
+    if outer_hi is None:
+        raise RuntimeError("offset-O ring collides with cyclic pitch boundary")
+    if d_use < d_o - 1e-16:
+        notes.append(f"d_o shrunk {d_o:.3g} → {d_use:.3g} m so offset clears cyclics")
+
+    spl = _down_u_splits(outer_hi)
+    if spl is None:
+        raise RuntimeError("offset-O U-split failed (not a down-opening cavity)")
+    inner_idx = spl["inner"]
+    outer_idx = spl["outer"]
+    kNW, kNE = spl["kNW"], spl["kNE"]
+    kE, kW = spl["kE"], spl["kW"]
+    kE_top, kW_top = spl["kE_top"], spl["kW_top"]
+    notes.append(
+        f"U-cavity depth {spl['depth']*1e3:.2f} mm / y-span {spl['yspan']*1e3:.2f} mm; "
+        f"cavity TFI + offset collar (not AABB morph across the stems)"
+    )
+
+    n_stem = max(int(n_in), int(n_cyc), 12)
+    n_cav_x = int(n_cyc)
+    n_cav_y = n_stem
+    n_up = max(int(n_fill), 4)
+
+    def _side(ring, idx, nseg):
+        return _resample_xy(idx, ring, nseg)
+
+    cav_w = _side(outer_hi, inner_idx[: kNW + 1], n_cav_y)
+    cav_n = _side(outer_hi, inner_idx[kNW : kNE + 1], n_cav_x)
+    cav_e_n2s = _side(outer_hi, inner_idx[kNE :], n_cav_y)
+    cav_e = cav_e_n2s[::-1].copy()
+    east_o = _side(outer_hi, outer_idx[: kE + 1], n_out)                 # Rt → stem NE
+    east_up = _side(outer_hi, outer_idx[kE : kE_top + 1], n_up)          # stem NE → top NE
+    north_o = _side(outer_hi, outer_idx[kE_top : kW_top + 1], n_cyc)     # top NE → top NW
+    west_up = _side(outer_hi, outer_idx[kW_top : kW + 1], n_up)          # top NW → stem NW
+    west_o = _side(outer_hi, outer_idx[kW :], n_in)                      # stem NW → Lt
+
+    met_w = _side(inner_hi, inner_idx[: kNW + 1], n_cav_y)
+    met_n = _side(inner_hi, inner_idx[kNW : kNE + 1], n_cav_x)
+    met_e = _side(inner_hi, inner_idx[kNE :], n_cav_y)[::-1].copy()
+    met_east_o = _side(inner_hi, outer_idx[: kE + 1], n_out)
+    met_east_up = _side(inner_hi, outer_idx[kE : kE_top + 1], n_up)
+    met_north_o = _side(inner_hi, outer_idx[kE_top : kW_top + 1], n_cyc)
+    met_west_up = _side(inner_hi, outer_idx[kW_top : kW + 1], n_up)
+    met_west_o = _side(inner_hi, outer_idx[kW :], n_in)
+
+    inner = np.concatenate(
+        [
+            met_w[:-1], met_n[:-1], met_e[::-1][:-1],
+            met_east_o[:-1], met_east_up[:-1], met_north_o[:-1], met_west_up[:-1], met_west_o[:-1],
+        ],
+        axis=0,
+    )
+    outer = np.concatenate(
+        [
+            cav_w[:-1], cav_n[:-1], cav_e_n2s[:-1],
+            east_o[:-1], east_up[:-1], north_o[:-1], west_up[:-1], west_o[:-1],
+        ],
+        axis=0,
+    )
+    if inner.shape[0] != outer.shape[0]:
+        raise RuntimeError(f"U offset-O ring mismatch inner={inner.shape[0]} outer={outer.shape[0]}")
+
+    ogrid = build_pitch_ogrid(inner, outer, n_rad, stretch)
+    if min_cell_area_2d(ogrid) <= 0:
+        ogrid = ogrid[::-1].copy()
+    a2 = min_cell_area_2d(ogrid)
+    if a2 <= 0:
+        raise RuntimeError(f"folded offset-O: min quad area {a2:.3e} m2")
+    sm = smooth_ogrid(ogrid, n_iter=12, omega=0.35)
+    if min_cell_area_2d(sm) > 0:
+        ogrid = sm
+        a2 = min_cell_area_2d(ogrid)
+    # H-O-H: open O at TE. Periodic wrap across dual-arc TE makes same-side faces.
+    # Rotate TE (wall max-x) to column 0; keep that column for wake south/north
+    # nodes (H still expects the TE outer point); open cuts are the adjacent
+    # columns so the wake has finite thickness.
+    i_te = int(np.argmax(ogrid[:, 0, 0]))
+    if i_te:
+        ogrid = np.concatenate([ogrid[i_te:], ogrid[:i_te]], axis=0)
+    if ogrid.shape[0] < 8:
+        raise RuntimeError("O-grid too coarse to open at TE")
+    te_col = ogrid[0].copy()
+    ogrid = ogrid[1:, :, :].copy()
+    dcut = float(np.linalg.norm(ogrid[0, 0, :] - ogrid[-1, 0, :]))
+    if dcut < 1e-7:
+        raise RuntimeError(f"TE wake cuts coincident after open (d={dcut:.3e})")
+    te_w_old = te_col[0].copy()
+    te_o_old = te_col[-1].copy()
+    te_w = _project_to_seg(te_w_old, ogrid[0, 0], ogrid[-1, 0])
+    te_o = _project_to_seg(te_o_old, ogrid[0, -1], ogrid[-1, -1])
+    h_te_wake = te_wake_block(ogrid, te_w, te_o)
+    a2 = min_cell_area_2d(ogrid)
+    kink_um = float(np.linalg.norm(te_w_old - te_w)) * 1e6
+    notes.append(
+        f"H-O-H TE wake: open O, TE projected to cut chord "
+        f"(unkink {kink_um:.0f} um), cut wall sep={dcut*1e3:.4f} mm"
+    )
+
+    pLt = cav_w[0]
+    pRt = cav_e[0]
+    pNW_o = west_o[0]          # stem NW
+    pNE_o = east_o[-1]         # stem NE
+    pNW_top = north_o[-1]
+    pNE_top = north_o[0]
+    west_s2n = west_o[::-1].copy()
+    east_s2n = east_o
+    west_up_s2n = west_up[::-1].copy()  # stem NW → top NW
+    east_up_s2n = east_up               # stem NE → top NE
+    north_ltr = north_o[::-1].copy()    # top NW → top NE
+    mouth = _lin(pLt, pRt, n_cyc)
+    cav_south = mouth
+    cav_north = cav_n
+    cav_west = cav_w
+    cav_east = cav_e
+    if cav_north.shape[0] != cav_south.shape[0] or cav_west.shape[0] != cav_east.shape[0]:
+        raise RuntimeError("cavity TFI edge mismatch")
+    h_cav_raw = tfi_block(cav_south, cav_north, cav_west, cav_east)
+    if min_cell_area_2d_rect(h_cav_raw) <= 0:
+        h_cav_raw = tfi_block(cav_south, cav_north, cav_east, cav_west)
+        notes.append("cavity TFI: swapped east/west to clear inverted quads")
+    h_cav = _pos_block(h_cav_raw, "cavity")
+
+    x_join_w = float(pLt[0])
+    x_join_e = float(pRt[0])
+    xs_w = np.linspace(x_in, x_join_w, n_in + 1)
+    xs_s = np.linspace(x_join_w, x_join_e, n_cyc + 1)
+    x_cart = min(x_out - 1e-6, max(float(outer_hi[:, 0].max()), x_join_e) + 2e-4)
+    xs_near = np.linspace(x_join_e, x_cart, n_out + 1)
+    xs_dump = np.linspace(x_cart, x_out, n_out_x + 1)
+    xs_e = xs_near
+    cyc_s = np.column_stack([xs_s, np.full(xs_s.shape[0], y_bot)])
+    cyc_n = np.column_stack([xs_s, np.full(xs_s.shape[0], y_top)])
+    join_w_top = np.array([x_join_w, y_top], dtype=float)
+    join_e_top = np.array([x_join_e, y_top], dtype=float)
+    join_w_bot = np.array([x_join_w, y_bot], dtype=float)
+    join_e_bot = np.array([x_join_e, y_bot], dtype=float)
+
+    # Shared wake interface: cavity uses mouth Lt→Rt as south; south H uses the
+    # same point sequence as its north edge (conformal). Face-normal repair later
+    # orients owner→neighbour; do not reverse here or nodes will duplicate.
+    h_south = _pos_block(
+        tfi_block(cyc_s, mouth, _lin(join_w_bot, pLt, n_fill), _lin(join_e_bot, pRt, n_fill)),
+        "south",
+    )
+    h_north = _pos_block(
+        tfi_block(north_ltr, cyc_n, _lin(pNW_top, join_w_top, n_fill), _lin(pNE_top, join_e_top, n_fill)),
+        "north",
+    )
+    h_west = _pos_block(
+        tfi_block(
+            _lin((x_in, pLt[1]), pLt, n_in),
+            _lin((x_in, pNW_o[1]), pNW_o, n_in),
+            np.column_stack([np.full(west_s2n.shape[0], x_in), west_s2n[:, 1]]),
+            west_s2n,
+        ),
+        "west",
+    )
+    h_west_up = _pos_block(
+        tfi_block(
+            _lin((x_in, pNW_o[1]), pNW_o, n_in),
+            _lin((x_in, pNW_top[1]), pNW_top, n_in),
+            np.column_stack([np.full(west_up_s2n.shape[0], x_in), west_up_s2n[:, 1]]),
+            west_up_s2n,
+        ),
+        "west_up",
+    )
+    h_east = _pos_block(
+        tfi_block(
+            _lin(pRt, (x_cart, pRt[1]), n_out),
+            _lin(pNE_o, (x_cart, pNE_o[1]), n_out),
+            east_s2n,
+            np.column_stack([np.full(east_s2n.shape[0], x_cart), east_s2n[:, 1]]),
+        ),
+        "east",
+    )
+    h_east_up = _pos_block(
+        tfi_block(
+            _lin(pNE_o, (x_cart, pNE_o[1]), n_out),
+            _lin(pNE_top, (x_cart, pNE_top[1]), n_out),
+            east_up_s2n,
+            np.column_stack([np.full(east_up_s2n.shape[0], x_cart), east_up_s2n[:, 1]]),
+        ),
+        "east_up",
+    )
+    h_sw = _pos_block(
+        tfi_block(
+            np.column_stack([xs_w, np.full(xs_w.shape[0], y_bot)]),
+            _lin((x_in, pLt[1]), pLt, n_in),
+            _lin((x_in, y_bot), (x_in, pLt[1]), n_fill),
+            _lin(join_w_bot, pLt, n_fill),
+        ),
+        "sw",
+    )
+    h_se = _pos_block(
+        tfi_block(
+            np.column_stack([xs_e, np.full(xs_e.shape[0], y_bot)]),
+            np.column_stack([xs_e, np.full(xs_e.shape[0], pRt[1])]),
+            _lin(join_e_bot, pRt, n_fill),
+            _lin((x_cart, y_bot), (x_cart, pRt[1]), n_fill),
+        ),
+        "se",
+    )
+    h_nw = _pos_block(
+        tfi_block(
+            _lin((x_in, pNW_top[1]), pNW_top, n_in),
+            np.column_stack([xs_w, np.full(xs_w.shape[0], y_top)]),
+            _lin((x_in, pNW_top[1]), (x_in, y_top), n_fill),
+            _lin(pNW_top, join_w_top, n_fill),
+        ),
+        "nw",
+    )
+    h_ne = _pos_block(
+        tfi_block(
+            _lin(pNE_top, (x_cart, pNE_top[1]), n_out),
+            np.column_stack([xs_e, np.full(xs_e.shape[0], y_top)]),
+            _lin(pNE_top, join_e_top, n_fill),
+            _lin((x_cart, pNE_top[1]), (x_cart, y_top), n_fill),
+        ),
+        "ne",
+    )
+    ys_dump = np.concatenate(
+        [
+            np.linspace(y_bot, float(pRt[1]), n_fill + 1)[:-1],
+            east_s2n[:-1, 1],
+            east_up_s2n[:-1, 1],
+            np.linspace(float(pNE_top[1]), y_top, n_fill + 1),
+        ]
+    )
+    h_dump = _pos_block(cartesian_block_xy(xs_dump, ys_dump), "dump")
+    snap = [(te_w_old, te_w), (te_o_old, te_o)]
+    h_rest = [_snap_points(hb, snap) for hb in [h_cav, h_west, h_west_up, h_east, h_east_up, h_south, h_north, h_sw, h_se, h_nw, h_ne, h_dump]]
+    h_blocks = [h_te_wake, *h_rest]
+    notes.append("H-blocks: cavity TFI inside the U; outer TFI to the pitch rectangle.")
+    notes.append("H TE nodes snapped to wake chord (unkinked).")
+    notes.append("Cyclic x-nodes are shared top/bottom so 3-pitch stacking is conformal.")
+    notes.append("NOT subsetMesh stairs. NOT AABB morph across the cavity. NOT Gmsh.")
+    return ogrid, h_blocks, a2, notes
+
+
+
+
+def _shift_poly(poly: list[tuple[float, float]], dy: float) -> list[tuple[float, float]]:
+    return [(p[0], p[1] + dy) for p in poly]
+
+
+def _aabb_xy(pts: np.ndarray) -> tuple[float, float, float, float]:
+    return (
+        float(pts[:, 0].min()),
+        float(pts[:, 0].max()),
+        float(pts[:, 1].min()),
+        float(pts[:, 1].max()),
+    )
+
+
+def _aabb_overlap(a, b, eps: float = 1e-9) -> bool:
+    return not (
+        a[1] <= b[0] + eps
+        or b[1] <= a[0] + eps
+        or a[3] <= b[2] + eps
+        or b[3] <= a[2] + eps
+    )
+
+
+def point_in_closed_poly(x: float, y: float, poly: list[tuple[float, float]]) -> bool:
+    """Even-odd PIP. Boundary counts as inside."""
+    pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
+    n = len(pts)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = pts[i]
+        xj, yj = pts[j]
+        if abs(yi - y) < 1e-16 and abs(xi - x) < 1e-16:
+            return True
+        if (yi > y) != (yj > y):
+            xing = (xj - xi) * (y - yi) / (yj - yi + 1e-30) + xi
+            if abs(xing - x) < 1e-16:
+                return True
+            if xing > x:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _ogrid_from_offset(
+    poly0: list[tuple[float, float]],
+    d_o: float,
+    n_in: int,
+    n_out: int,
+    n_cyc: int,
+    n_rad: int,
+    stretch: float,
+) -> tuple[np.ndarray, np.ndarray, float, list[str]]:
+    """Offset-closed O-collar. Same hybrid/offset functions as body_fitted, no AABB morph.
+
+    Outer ring is the wall-normal offset (not a pitch rectangle). 4-side counts
+    match today's S/N=n_cyclic so a neighbor passage can TFI on those nodes.
+    """
+    notes: list[str] = []
+    n_i = 2 * n_cyc + n_in + n_out
+    inner = resample_closed(poly0, n_i)
+    if polygon_signed_area([(float(x), float(y)) for x, y in inner]) < 0:
+        inner = inner[::-1].copy()
+    outer = offset_closed(inner, d_o, n_smooth=12)
+    ogrid = build_pitch_ogrid(inner, outer, n_rad, stretch)
+    if min_cell_area_2d(ogrid) <= 0:
+        ogrid = ogrid[::-1].copy()
+    a2 = min_cell_area_2d(ogrid)
+    if a2 <= 0:
+        og2 = build_hybrid_aabb_ogrid(inner, outer, n_rad, stretch, 0.90 * d_o)
+        if min_cell_area_2d(og2) <= 0:
+            og2 = og2[::-1].copy()
+        if min_cell_area_2d(og2) > 0:
+            ogrid = og2
+            a2 = min_cell_area_2d(ogrid)
+            notes.append("cassette O: hybrid AABB-morph fallback on offset ring")
+    sm = smooth_ogrid(ogrid, n_iter=8, omega=0.35)
+    if min_cell_area_2d(sm) > 0:
+        ogrid = sm
+        a2 = min_cell_area_2d(ogrid)
+    if a2 <= 0:
+        raise RuntimeError(f"folded cassette O-grid: min quad area {a2:.3e} m2")
+    notes.append(f"cassette O-collar d_o={d_o:.3g} m n_i={ogrid.shape[0]} n_rad={n_rad}")
+    return ogrid, ogrid[:, -1, :].copy(), a2, notes
+
+
+def _ring_ps_ss(ring: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    poly = [(float(x), float(y)) for x, y in ring] + [(float(ring[0, 0]), float(ring[0, 1]))]
+    ps, ss, _, _ = split_ps_ss(poly)
+    return np.array(ps, dtype=float), np.array(ss, dtype=float)
+
+
+def _passage_tfi(south: np.ndarray, north: np.ndarray, n_st: int, n_span: int, name: str) -> np.ndarray:
+    s = resample_open_arclength(south, n_st + 1)
+    n = resample_open_arclength(north, n_st + 1)
+    west = _lin(s[0], n[0], n_span)
+    east = _lin(s[-1], n[-1], n_span)
+    return _pos_block(tfi_block(s, n, west, east), name)
+
+
+def build_cassette_oh(
+    poly0: list[tuple[float, float]],
+    *,
+    pitch: float,
+    n_blades: int,
+    x_in: float,
+    x_out: float,
+    n_in: int,
+    n_out: int,
+    n_cyc: int,
+    n_rad: int,
+    n_fill: int,
+    n_out_x: int,
+    stretch: float,
+    d_o: float,
+    g_min: float,
+) -> dict:
+    """Three physical C's in one polyMesh. Fluid outside every C. No cyclic. No Gmsh."""
+    notes: list[str] = []
+    blades = [_shift_poly(poly0, k * pitch) for k in range(n_blades)]
+    d_use = min(float(d_o), 0.28 * max(float(g_min), 1e-6), 0.00045)
+    if d_use < float(d_o) - 1e-16:
+        notes.append(f"d_o {d_o:.3g} → {d_use:.3g} m so collars clear Gate-0 gap")
+    ogrids = []
+    outers = []
+    aabbs = []
+    a2_min = 1e99
+    for k, pk in enumerate(blades):
+        og, outer, a2, onotes = _ogrid_from_offset(
+            pk, d_use, n_in, n_out, n_cyc, n_rad, stretch
+        )
+        ogrids.append(og)
+        outers.append(outer)
+        aabbs.append(_aabb_xy(outer))
+        a2_min = min(a2_min, a2)
+        notes.extend(onotes)
+    for k in range(n_blades - 1):
+        if _aabb_overlap(aabbs[k], aabbs[k + 1]):
+            notes.append(
+                f"O AABB overlap blade{k}/blade{k+1} "
+                f"{aabbs[k]} vs {aabbs[k+1]} — nested C; H is arc-length passage TFI "
+                "not Cartesian-minus-AABB"
+            )
+    all_y0 = min(a[2] for a in aabbs)
+    all_y1 = max(a[3] for a in aabbs)
+    lid = max(0.5 * d_use, 0.0005)
+    y_bot = all_y0 - lid
+    y_top = all_y1 + lid
+    h_blocks: list[np.ndarray] = []
+    n_st = max(n_cyc, 24)
+    n_span = max(n_fill, 8)
+    for k in range(n_blades - 1):
+        _ps_a, ss_a = _ring_ps_ss(outers[k])
+        ps_b, _ss_b = _ring_ps_ss(outers[k + 1])
+        h_blocks.append(_passage_tfi(ss_a, ps_b, n_st, n_span, f"pass{k}"))
+        notes.append(f"passage TFI blade{k} SS-offset vs blade{k+1} PS-offset (arc length)")
+        # inlet / outlet of this channel
+        s0 = resample_open_arclength(ss_a, n_st + 1)
+        n0 = resample_open_arclength(ps_b, n_st + 1)
+        s_head = _lin((x_in, float(s0[0, 1])), s0[0], n_in)
+        n_head = _lin((x_in, float(n0[0, 1])), n0[0], n_in)
+        west_in = _lin(s_head[0], n_head[0], n_span)
+        east_in = _lin(s0[0], n0[0], n_span)
+        h_blocks.append(_pos_block(tfi_block(s_head, n_head, west_in, east_in), f"in{k}"))
+        s_tail = _lin(s0[-1], (x_out, float(s0[-1, 1])), n_out_x)
+        n_tail = _lin(n0[-1], (x_out, float(n0[-1, 1])), n_out_x)
+        west_out = _lin(s0[-1], n0[-1], n_span)
+        east_out = _lin(s_tail[-1], n_tail[-1], n_span)
+        h_blocks.append(_pos_block(tfi_block(s_tail, n_tail, west_out, east_out), f"out{k}"))
+    # floor under blade0 PS-offset; lid above last SS-offset
+    ps0, ss0 = _ring_ps_ss(outers[0])
+    _psN, ssN = _ring_ps_ss(outers[-1])
+    ps0r = resample_open_arclength(ps0, n_st + 1)
+    ssNr = resample_open_arclength(ssN, n_st + 1)
+    floor_s = np.column_stack([ps0r[:, 0], np.full(ps0r.shape[0], y_bot)])
+    # keep floor x in domain
+    floor_s[:, 0] = np.clip(floor_s[:, 0], x_in, x_out)
+    h_blocks.append(_passage_tfi(floor_s, ps0r, n_st, max(n_fill, 4), "floor"))
+    lid_n = np.column_stack([ssNr[:, 0], np.full(ssNr.shape[0], y_top)])
+    lid_n[:, 0] = np.clip(lid_n[:, 0], x_in, x_out)
+    h_blocks.append(_passage_tfi(ssNr, lid_n, n_st, max(n_fill, 4), "lid"))
+    # cavity of the TOP C only (lower U's hold the neighbor)
+    spl = _down_u_splits(outers[-1])
+    if spl is not None:
+        inner_hi = resample_closed(blades[-1], max(4 * (2 * n_cyc + n_in + n_out), 200))
+        if polygon_signed_area([(float(x), float(y)) for x, y in inner_hi]) < 0:
+            inner_hi = inner_hi[::-1].copy()
+        off_hi = outers[-1]
+        # cavity on the offset ring of the last blade; splits are indices into that ring
+        try:
+            n_stem = max(int(n_in), int(n_cyc), 12)
+            inner_idx = spl["inner"]
+            kNW, kNE = spl["kNW"], spl["kNE"]
+            cav_w = _resample_xy(inner_idx[: kNW + 1], off_hi, n_stem)
+            cav_n = _resample_xy(inner_idx[kNW : kNE + 1], off_hi, n_cyc)
+            cav_e = _resample_xy(inner_idx[kNE:], off_hi, n_stem)[::-1].copy()
+            pLt, pRt = cav_w[0], cav_e[0]
+            mouth = _lin(pLt, pRt, n_cyc)
+            h_cav = _pos_block(tfi_block(mouth, cav_n, cav_w, cav_e), "cavity_top")
+            h_blocks.append(h_cav)
+            notes.append("cavity TFI on top C only (lower cups nest the neighbor)")
+        except Exception as exc:
+            notes.append(f"top cavity TFI skipped: {exc}")
+    kept = []
+    for hb in h_blocks:
+        ni, nj, _ = hb.shape
+        hit = False
+        for i in range(ni - 1):
+            for j in range(nj - 1):
+                c = 0.25 * (hb[i, j] + hb[i + 1, j] + hb[i + 1, j + 1] + hb[i, j + 1])
+                for bp in blades:
+                    if point_in_closed_poly(float(c[0]), float(c[1]), bp):
+                        hit = True
+                        break
+                if hit:
+                    break
+            if hit:
+                break
+        if hit:
+            notes.append(f"dropped H-block shape={hb.shape} (PIP inside C)")
+        else:
+            kept.append(hb)
+    h_blocks = kept
+    first_cell = float(np.mean(np.linalg.norm(ogrids[0][:, 1, :] - ogrids[0][:, 0, :], axis=1)))
+    notes.append("mesh_kind cassette_OH: 3 closed metals, fluid outside every C, lid/floor WALL not cyclic.")
+    notes.append("NOT Gmsh. NOT y(x) passage_OH. NOT subsetMesh stairs.")
+    return {
+        "ogrids": ogrids,
+        "h_blocks": h_blocks,
+        "blades": blades,
+        "y_bot": y_bot,
+        "y_top": y_top,
+        "d_o": d_use,
+        "a2": float(a2_min),
+        "first_cell": first_cell,
+        "notes": notes,
+        "aabbs": aabbs,
+        "n_i": int(ogrids[0].shape[0]),
+    }
+
+
+@dataclass
+class MeshBuild:
+    n_cells: int
+    n_points: int
+    n_faces: int
+    patches: dict[str, int]
+    first_cell_m: float
+    min_area_2d: float
+    check_notes: list[str] = field(default_factory=list)
+    y_shift_m: float = 0.0
+    pitch_m: float = 0.0
+    z_thick_m: float = 0.001
+    blade_polys: list[list[tuple[float, float]]] = field(default_factory=list)
+    x_in: float = 0.0
+    x_out: float = 0.0
+    y_min: float = 0.0
+    y_max: float = 0.0
+    n_around: int = 0
+    n_radial: int = 0
+    d_o_m: float = 0.0
+    mesh_kind: str = "body_fitted_OH"
+
+
+def _point_key(x: float, y: float, z: float) -> tuple[int, int, int]:
+    return (round(x * 1e12), round(y * 1e12), round(z * 1e12))
+
+
+def write_polymesh(
+    case_dir: Path,
+    job: dict[str, Any],
+    spec: BladeSpec,
+    poly: list[tuple[float, float]] | None = None,
+) -> MeshBuild:
+    g = job["geometry"]
+    cfd = job["cfd"]
+    pitch = cascade_pitch_m(job)
+    n_blades = int(g["n_blades_cascade"])
+    x_in = -float(cfd["x_up_c"]) * spec.chord_m
+    x_out = spec.chord_m + float(cfd["x_dn_c"]) * spec.chord_m
+    n_in = int(cfd["n_inlet"])
+    n_out_x = int(cfd["n_outlet"])
+    # O-grid east count stays at the ring default; extra n_outlet is dump Δx only.
+    n_out = int(cfd.get("n_outlet_ring") or min(n_out_x, 14))
+    n_cyc = int(cfd["n_cyclic"])
+    n_rad = int(cfd["n_radial"])
+    n_around_req = int(cfd.get("n_around", 48))
+    n_fill = int(cfd.get("n_pitch_fill", 6))
+    stretch = float(cfd["stretch"])
+    zth = float(cfd["z_thick_m"])
+    y_bot, y_top = -0.5 * pitch, 0.5 * pitch
+
+    # 4-side ring: S/N = n_cyclic, W = n_inlet, E = n_outlet.
+    # Not 2*(n_cyclic + n_inlet) and not an impulse-cup special case.
+    n_around_base = 2 * n_cyc + n_in + n_out
+    extra = int(n_around_req) - n_around_base
+    if extra >= 2:
+        add = extra // 2
+        n_cyc += add
+
+    poly0 = list(poly) if poly is not None else profile_from_job(job, spec)
+    if polygon_signed_area(poly0) <= 0:
+        raise RuntimeError("profile is not a CCW metal interior (zero or negative area)")
+    ys0 = [p[1] for p in poly0]
+    yspan = max(ys0) - min(ys0)
+    fam0 = str((job.get("geometry") or {}).get("profile_family") or "")
+    # ORBIT 2026-09-03: y(x) passage_OH is off the load path. Nested C is legal
+    # pack; rectangle O+H cannot host yspan>s — that raises, it does not clip.
+    use_passage = False
+    passage = None
+    cas = None
+    y_shift = 0.0
+    gap0 = passage_gap(poly0, pitch)
+    if float(gap0["g_min"]) <= 0.0:
+        raise RuntimeError(
+            f"INTERSECTING METAL: passage_gap g_min={float(gap0['g_min'])*1e3:.4f} mm <= 0 "
+            f"(SS0 vs PS0+(0,s={pitch*1e3:.3f} mm), arc-length n_hat, not y(x)). "
+            "Refuse mesh/solve."
+        )
+    d_o_gate = min(0.00045, 0.06 * spec.chord_m)
+    if yspan + 2.0 * d_o_gate >= float(pitch):
+        cas = build_cassette_oh(
+            poly0,
+            pitch=pitch,
+            n_blades=n_blades,
+            x_in=x_in,
+            x_out=x_out,
+            n_in=n_in,
+            n_out=n_out,
+            n_cyc=n_cyc,
+            n_rad=n_rad,
+            n_fill=n_fill,
+            n_out_x=n_out_x,
+            stretch=stretch,
+            d_o=d_o_gate,
+            g_min=float(gap0["g_min"]),
+        )
+        y_shift = 0.0
+        ogrid = cas["ogrids"][0]
+        h_blocks = cas["h_blocks"]
+        a2 = cas["a2"]
+        first_cell = cas["first_cell"]
+        n_i = cas["n_i"]
+        oh_notes = list(cas["notes"])
+        d_o = cas["d_o"]
+        y_bot, y_top = cas["y_bot"], cas["y_top"]
+        oh_notes.append(
+            f"Gate 0 g_min={float(gap0['g_min'])*1e3:.3f} mm > 0; mesh_kind cassette_OH "
+            f"(yspan={yspan*1e3:.2f} mm + 2 d_o >= s={pitch*1e3:.2f} mm)"
+        )
+    if use_passage:
+        from .passage import build_passage_oh
+        passage = build_passage_oh(
+            poly0,
+            pitch=pitch,
+            x_in=x_in,
+            x_out=x_out,
+            n_in=n_in,
+            n_out=n_out_x,
+            n_stream=max(n_cyc * 4, 64),
+            n_span=max(n_fill, 8),
+            n_rad=n_rad,
+            stretch=stretch,
+            d_o=min(0.00045, 0.06 * spec.chord_m),
+        )
+        y_shift = 0.0
+        n_blades = 2
+        ogrid = passage.o_south
+        h_blocks = [passage.h_core, passage.h_inlet, passage.h_outlet]
+        a2 = passage.min_area_2d
+        first_cell = passage.first_cell_m
+        n_i = ogrid.shape[0]
+        oh_notes = list(passage.notes)
+        d_o = passage.d_o
+        y_bot, y_top = passage.y_min, passage.y_max
+    if passage is None and cas is None:
+        poly0, y_shift = center_in_pitch(poly0, pitch)
+    xs = [p[0] for p in poly0]
+    ys = [p[1] for p in poly0]
+    xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
+    clearance_y = min(y_top - ymax, ymin - y_bot) if (passage is None and cas is None) else 1.0
+    if passage is None and cas is None and clearance_y <= 1e-9:
+        raise RuntimeError("profile clearance to cyclic is non-positive (pitch rectangle cannot host this C)")
+    if passage is None and cas is None:
+        d_o = min(0.00045, 0.22 * max(clearance_y, 2e-6), 0.06 * spec.chord_m)
+    fam = str((job.get("geometry") or {}).get("profile_family") or "")
+    use_cavity = profile_has_cavity(poly0) and fam in (
+        "impulse_bucket", "goldman_impulse", "goldman", "goldman_vortex",
+    )
+    if passage is None and cas is None and use_cavity:
+        # Tight pack: spend most of the cyclic gap on the O-collar, keep ≥8 µm.
+        d_o = min(0.00045, max(2e-6, 0.55 * clearance_y), 0.06 * spec.chord_m)
+        ogrid, h_blocks, a2, oh_notes = build_offset_oh(
+            poly0,
+            x_in=x_in,
+            x_out=x_out,
+            y_bot=y_bot,
+            y_top=y_top,
+            n_in=n_in,
+            n_out=n_out,
+            n_cyc=n_cyc,
+            n_rad=n_rad,
+            n_fill=n_fill,
+            stretch=stretch,
+            d_o=d_o,
+            n_out_x=n_out_x,
+        )
+        first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
+        n_i = ogrid.shape[0]
+    elif passage is None and cas is None:
+        # Tight AABB around a wall-normal offset (not metal+d_o). Cartesian H-blocks
+        # need a vertical west edge; wrapping a C-shaped LE in one TFI H-block folds.
+        inner_hi = resample_closed(poly0, max(4 * (2 * n_cyc + n_in + n_out), 200))
+        if polygon_signed_area([(float(x), float(y)) for x, y in inner_hi]) < 0:
+            inner_hi = inner_hi[::-1].copy()
+        off_hi = offset_closed(inner_hi, d_o, n_smooth=12)
+        bx0, bx1 = float(off_hi[:, 0].min()), float(off_hi[:, 0].max())
+        by0, by1 = float(off_hi[:, 1].min()), float(off_hi[:, 1].max())
+        pad_y = 0.72 * min(by0 - (y_bot + 1e-6), (y_top - 1e-6) - by1)
+        pad_x = max(pad_y, 0.05 * spec.chord_m)
+        pad_y = max(pad_y, 0.0)
+        bx0 -= pad_x
+        bx1 += pad_x
+        by0 -= pad_y
+        by1 += pad_y
+        if by0 <= y_bot + 1e-6 or by1 >= y_top - 1e-6:
+            raise RuntimeError("O-grid AABB collides with cyclic pitch boundary")
+        if bx0 <= x_in + 1e-7 or bx1 >= x_out - 1e-7:
+            raise RuntimeError("O-grid AABB collides with inlet/outlet")
+        outer, ranges = outer_rectangle(bx0, bx1, by0, by1, n_cyc, n_out, n_cyc, n_in)
+
+        def _positive_ogrid(inner_ring: np.ndarray) -> np.ndarray:
+            og = build_hybrid_aabb_ogrid(inner_ring, outer, n_rad, stretch, 0.90 * d_o)
+            if min_cell_area_2d(og) <= 0:
+                og = og[::-1].copy()
+            if min_cell_area_2d(og) <= 0:
+                og = build_pitch_ogrid(inner_ring, outer, n_rad, stretch)
+                if min_cell_area_2d(og) <= 0:
+                    og = og[::-1].copy()
+            return og
+
+        inner = inner_match_by_angle(poly0, outer)
+        ogrid = _positive_ogrid(inner)
+        used = "centroid-angle inner"
+        if min_cell_area_2d(ogrid) <= 0:
+            inner = inner_from_profile(poly0, outer, ranges)
+            ogrid = _positive_ogrid(inner)
+            used = "4-side inner (angle match folded)"
+        a2 = min_cell_area_2d(ogrid)
+        if a2 <= 0:
+            raise RuntimeError(f"folded O-grid: min quad area {a2:.3e} m2")
+        sm = smooth_ogrid(ogrid, n_iter=12, omega=0.35)
+        if min_cell_area_2d(sm) > 0:
+            ogrid = sm
+            a2 = min_cell_area_2d(ogrid)
+        first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
+        n_i = ogrid.shape[0]
+        h_west = _pos_block(cartesian_block(x_in, bx0, by0, by1, n_in, n_in), "west")
+        xs_east = np.array([bx1 + (x_out - bx1) * _stretch(j, n_out_x, max(stretch, 1.0)) for j in range(n_out_x + 1)])
+        h_east = _pos_block(cartesian_block_xy(xs_east, np.linspace(by0, by1, n_out + 1)), "east")
+        h_south = _pos_block(cartesian_block(bx0, bx1, y_bot, by0, n_cyc, n_fill), "south")
+        h_north = _pos_block(cartesian_block(bx0, bx1, by1, y_top, n_cyc, n_fill), "north")
+        h_sw = _pos_block(cartesian_block(x_in, bx0, y_bot, by0, n_in, n_fill), "sw")
+        h_se = _pos_block(cartesian_block_xy(xs_east, np.linspace(y_bot, by0, n_fill + 1)), "se")
+        h_nw = _pos_block(cartesian_block(x_in, bx0, by1, y_top, n_in, n_fill), "nw")
+        h_ne = _pos_block(cartesian_block_xy(xs_east, np.linspace(by1, y_top, n_fill + 1)), "ne")
+        h_blocks = [h_west, h_east, h_south, h_north, h_sw, h_se, h_nw, h_ne]
+        oh_notes = [
+            "O-outer is a padded AABB around the wall-normal offset; H-blocks Cartesian (cyclics conformal).",
+            "Inner ring prefers centroid-angle matching (4-side AABB LE/TE fans only if angle match folds).",
+            "Near-wall O is offset; only the last 1–2 layers morph to the AABB.",
+            "Last morph layer wrap at AABB corners is shortened by extra AABB pad (skew 4.68 hole).",
+            "NOT subsetMesh stairs. One-block TFI from a wrapped LE to the inlet folds; not used.",
+            f"4-side n_around: S/N=n_cyclic={n_cyc} E=n_outlet={n_out} W=n_inlet={n_in} (not 2*(n_cyc+n_in)). {used}",
+            f"AABB pad_x={pad_x:.3g} m pad_y={pad_y:.3g} m (room to morph oval→rectangle).",
+        ]
+
+    if cas is not None:
+        y_min, y_max = cas["y_bot"], cas["y_top"]
+        blade_polys = [list(b) for b in cas["blades"]]
+    elif passage is not None:
+        y_min, y_max = passage.y_min, passage.y_max
+        blade_polys = [list(poly0), [(xy[0], xy[1] + pitch) for xy in poly0]]
+    else:
+        y_min = y_bot
+        y_max = y_bot + n_blades * pitch
+        blade_polys = [[(xy[0], xy[1] + k * pitch) for xy in poly0] for k in range(n_blades)]
+
+    key_to_id: dict[tuple[int, int, int], int] = {}
+    points: list[tuple[float, float, float]] = []
+
+    def pid_xy(x: float, y: float, kz: int) -> int:
+        z = kz * zth
+        key = _point_key(x, y, z)
+        if key not in key_to_id:
+            key_to_id[key] = len(points)
+            points.append((x, y, z))
+        return key_to_id[key]
+
+    HEX_FACES = (
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (3, 7, 6, 2),
+        (0, 4, 7, 3),
+        (1, 2, 6, 5),
+    )
+    WALL_FACE = 2
+    face_owner: dict[frozenset[int], tuple[list[int], int]] = {}
+    face_neigh: dict[frozenset[int], int] = {}
+    wall_keys: dict[frozenset[int], str] = {}
+    n_cells = 0
+
+    def add_hex(verts: list[int], wall_patch: str | None = None) -> None:
+        nonlocal n_cells
+        ci = n_cells
+        n_cells += 1
+        for fi, fs in enumerate(HEX_FACES):
+            fverts = [verts[q] for q in fs]
+            key = frozenset(fverts)
+            if wall_patch is not None and fi == WALL_FACE:
+                wall_keys[key] = wall_patch
+            if key in face_owner:
+                face_neigh[key] = ci
+            else:
+                face_owner[key] = (fverts, ci)
+
+    def add_struct(pts: np.ndarray, dy: float, periodic_i: bool, wall_patch: str | None = None, wall_hi: str | None = None, flip_neg: bool = True) -> None:
+        ni, nj = pts.shape[0], pts.shape[1]
+        n_ic = ni if periodic_i else ni - 1
+        n_jc = nj - 1
+        for i in range(n_ic):
+            i2 = (i + 1) % ni if periodic_i else i + 1
+            for j in range(n_jc):
+                corners = [
+                    (float(pts[i, j, 0]), float(pts[i, j, 1]) + dy),
+                    (float(pts[i2, j, 0]), float(pts[i2, j, 1]) + dy),
+                    (float(pts[i2, j + 1, 0]), float(pts[i2, j + 1, 1]) + dy),
+                    (float(pts[i, j + 1, 0]), float(pts[i, j + 1, 1]) + dy),
+                ]
+                if flip_neg and _quad_area(corners[0], corners[1], corners[2], corners[3]) <= 0:
+                    corners = [corners[1], corners[0], corners[3], corners[2]]
+                verts = [pid_xy(x, y, 0) for x, y in corners] + [pid_xy(x, y, 1) for x, y in corners]
+                wp = wall_patch if (j == 0 and wall_patch) else (wall_hi if (j == n_jc - 1 and wall_hi) else None)
+                add_hex(verts, wall_patch=wp)
+
+    cell_xy: list[tuple[float, float]] = []
+    _add_hex0 = add_hex
+
+    def add_hex(verts: list[int], wall_patch: str | None = None) -> None:
+        _add_hex0(verts, wall_patch=wall_patch)
+        xs = [points[v][0] for v in verts[:4]]
+        ys = [points[v][1] for v in verts[:4]]
+        cell_xy.append((sum(xs) / 4.0, sum(ys) / 4.0))
+
+    if cas is not None:
+        for k, og in enumerate(cas["ogrids"]):
+            add_struct(og, 0.0, True, wall_patch=f"blade{k}")
+        for hb in cas["h_blocks"]:
+            add_struct(hb, 0.0, False)
+        shrunk = []
+        inset = max(0.35 * float(cas["d_o"]), 2e-6)
+        for bp in blade_polys:
+            ring = resample_closed(bp, max(len(bp), 120))
+            if polygon_signed_area([(float(x), float(y)) for x, y in ring]) < 0:
+                ring = ring[::-1].copy()
+            sh = offset_closed(ring, -inset, n_smooth=4)
+            shrunk.append([(float(x), float(y)) for x, y in sh] + [(float(sh[0, 0]), float(sh[0, 1]))])
+        n_og_cells = sum(int(og.shape[0] * (og.shape[1] - 1)) for og in cas["ogrids"])
+        n_in_c = 0
+        for cx, cy in cell_xy[n_og_cells:]:
+            for bp in shrunk:
+                if point_in_closed_poly(cx, cy, bp):
+                    n_in_c += 1
+                    break
+        if n_in_c:
+            raise RuntimeError(f"{n_in_c} H-block cell centres lie inside a closed C (cassette abort)")
+    elif passage is not None:
+        add_struct(passage.h_core, 0.0, False, wall_patch="blade0", wall_hi="blade1")
+        add_struct(passage.h_inlet, 0.0, False)
+        add_struct(passage.h_outlet, 0.0, False)
+    else:
+        # H-O-H: O open at TE (matching wake cuts); cavity-O periodic wrap is dead.
+        o_periodic = not any("H-O-H TE wake" in n for n in (oh_notes or []))
+        hoh_wake = o_periodic is False
+        for k in range(n_blades):
+            dy = k * pitch
+            add_struct(ogrid, dy, o_periodic, wall_patch=f"blade{k}")
+            for bi, hb in enumerate(h_blocks):
+                wp = f"blade{k}" if (hoh_wake and bi == 0) else None
+                # Wake: no 2D flip — flip was making OF face pyramids disagree at TE.
+                flip = not (hoh_wake and bi == 0)
+                add_struct(hb, dy, False, wall_patch=wp, flip_neg=flip)
+
+    internal = []
+    boundary = []
+    for key, (fverts, owner) in face_owner.items():
+        if key in face_neigh:
+            nb = face_neigh[key]
+            if owner > nb:
+                owner, nb = nb, owner
+                fverts = list(reversed(fverts))
+            internal.append((fverts, owner, nb))
+        else:
+            boundary.append((fverts, owner, key))
+    # checkMesh "Faces not in upper triangular order" without renumberMesh.
+    internal.sort(key=lambda t: (t[1], t[2]))
+
+    def fcent_t(fverts: list[int]) -> tuple[float, float, float]:
+        n = len(fverts)
+        return (
+            sum(points[i][0] for i in fverts) / n,
+            sum(points[i][1] for i in fverts) / n,
+            sum(points[i][2] for i in fverts) / n,
+        )
+
+    tol = 1e-8
+    blade_names = [f"blade{k}" for k in range(n_blades)]
+    buckets: dict[str, list[tuple[list[int], int, tuple[float, float, float]]]] = {
+        "inlet": [], "outlet": [], "bottom": [], "top": [],
+        "frontAndBack": [], **{n: [] for n in blade_names},
+    }
+    unclassified = 0
+    for fverts, owner, key in boundary:
+        c = fcent_t(fverts)
+        x, y, z = c
+        if abs(z - 0.0) < tol or abs(z - zth) < tol:
+            buckets["frontAndBack"].append((fverts, owner, c))
+        elif key in wall_keys:
+            buckets[wall_keys[key]].append((fverts, owner, c))
+        elif abs(x - x_in) < 2e-4:
+            buckets["inlet"].append((fverts, owner, c))
+        elif abs(x - x_out) < 2e-4:
+            buckets["outlet"].append((fverts, owner, c))
+        elif passage is not None and passage.cyclic and (
+            abs(y - passage.o_south[0, 0, 1]) < 1e-6
+            or abs(y - passage.o_south[-1, 0, 1]) < 1e-6
+        ):
+            buckets["bottom"].append((fverts, owner, c))
+        elif passage is not None and passage.cyclic and (
+            abs(y - (passage.o_south[0, 0, 1] + pitch)) < 1e-6
+            or abs(y - (passage.o_south[-1, 0, 1] + pitch)) < 1e-6
+        ):
+            buckets["top"].append((fverts, owner, c))
+        elif (passage is None) and abs(y - y_min) < 1e-7:
+            buckets["bottom"].append((fverts, owner, c))
+        elif (passage is None) and abs(y - y_max) < 1e-7:
+            buckets["top"].append((fverts, owner, c))
+        else:
+            if passage is not None:
+                ymid = 0.5 * (passage.y_min + passage.y_max)
+                name = "blade0" if y < ymid else "blade1"
+                buckets[name].append((fverts, owner, c))
+            elif cas is not None:
+                ymid = 0.5 * (y_min + y_max)
+                name = "bottom" if y < ymid else "top"
+                buckets[name].append((fverts, owner, c))
+            else:
+                unclassified += 1
+    if unclassified:
+        raise RuntimeError(f"{unclassified} boundary faces not on wall/inlet/outlet/cyclic/empty")
+    if any(not buckets[n] for n in blade_names):
+        raise RuntimeError("per-blade wall patches missing faces")
+    if cas is None and (buckets["bottom"] or buckets["top"]):
+        if len(buckets["bottom"]) != len(buckets["top"]):
+            raise RuntimeError(
+                f"cyclic face count mismatch bottom={len(buckets['bottom'])} top={len(buckets['top'])}"
+            )
+
+    buckets["bottom"].sort(key=lambda t: (round(t[2][0], 9), round(t[2][2], 9)))
+    buckets["top"].sort(key=lambda t: (round(t[2][0], 9), round(t[2][2], 9)))
+    patch_order = ["inlet", "outlet"]
+    if buckets["bottom"] or buckets["top"]:
+        patch_order.extend(["bottom", "top"])
+    patch_order.extend(["frontAndBack", *blade_names])
+
+    all_faces: list[list[int]] = []
+    owners: list[int] = []
+    neighs: list[int] = []
+    for fverts, ow, nb in internal:
+        all_faces.append(fverts)
+        owners.append(ow)
+        neighs.append(nb)
+    start: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for name in patch_order:
+        start[name] = len(all_faces)
+        for fverts, ow, _c in buckets[name]:
+            all_faces.append(fverts)
+            owners.append(ow)
+        counts[name] = len(buckets[name])
+
+    mesh_dir = case_dir / "constant" / "polyMesh"
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+    n_internal = len(neighs)
+    sep = n_blades * pitch
+
+    def w(name: str, body: str, cls: str, obj: str, note: str = "") -> None:
+        hdr = _foam_header(cls, obj, note=note) if note else _foam_header(cls, obj)
+        (mesh_dir / name).write_text(hdr + body + "\n", encoding="utf-8")
+
+    w("points", f"{len(points)}\n(\n" + "".join(f"({x:.12g} {y:.12g} {z:.12g})\n" for x, y, z in points) + ")\n", "vectorField", "points")
+    w("faces", f"{len(all_faces)}\n(\n" + "".join("4(" + " ".join(str(i) for i in fv) + ")\n" for fv in all_faces) + ")\n", "faceList", "faces")
+    w("owner", f"{len(owners)}\n(\n" + "".join(f"{i}\n" for i in owners) + ")\n", "labelList", "owner",
+      note=f"nPoints:{len(points)}  nCells:{n_cells}  nFaces:{len(all_faces)}  nInternalFaces:{n_internal}")
+    w("neighbour", f"{len(neighs)}\n(\n" + "".join(f"{i}\n" for i in neighs) + ")\n", "labelList", "neighbour",
+      note=f"nPoints:{len(points)}  nCells:{n_cells}  nFaces:{len(all_faces)}  nInternalFaces:{n_internal}")
+
+    btxt = [f"{len(patch_order)}\n(\n"]
+    for name in patch_order:
+        if name in ("bottom", "top"):
+            if cas is not None:
+                ptype = "wall"
+                extra = "        inGroups        1(wall);\n"
+            else:
+                neigh = "top" if name == "bottom" else "bottom"
+                svec = sep if name == "bottom" else -sep
+                extra = (
+                    "        inGroups        1(cyclic);\n"
+                    "        matchTolerance  0.0001;\n"
+                    "        transform       translational;\n"
+                    f"        neighbourPatch  {neigh};\n"
+                    f"        separationVector (0 {svec:.12g} 0);\n"
+                )
+                ptype = "cyclic"
+        elif name == "frontAndBack":
+            ptype = "empty"
+            extra = "        inGroups        1(empty);\n"
+        elif name.startswith("blade"):
+            ptype = "wall"
+            extra = "        inGroups        1(wall);\n"
+        else:
+            ptype = "patch"
+            extra = ""
+        btxt.append(
+            f"    {name}\n    {{\n        type            {ptype};\n{extra}"
+            f"        nFaces          {counts[name]};\n        startFace       {start[name]};\n    }}\n"
+        )
+    btxt.append(")\n")
+    w("boundary", "".join(btxt), "polyBoundaryMesh", "boundary")
+
+    notes = [
+        (
+            "mesh: cassette_OH — three closed C metals, fluid outside every C, lid/floor walls."
+            if cas is not None
+            else (
+                "mesh: Goldman/Katsanis passage O+H (SS0 vs PS0+s). Not a pitch rectangle."
+                if passage is not None
+                else "mesh: body-fitted O-grid on the metal + Cartesian H-blocks to the pitch rectangle."
+            )
+        ),
+        "NOT Cartesian subsetMesh stair-step.",
+        f"{n_blades} blades, pitch {pitch:.6g} m, empty frontAndBack, slab {zth} m.",
+        f"O n_around={n_i} (JSON n_around={n_around_req}; S/N=n_cyclic={n_cyc} E=n_outlet={n_out} W=n_inlet={n_in}) n_radial={n_rad}",
+        f"n_cells={n_cells} first_cell≈{first_cell:.3g} m d_o={d_o:.3g} m min O-quad {a2:.3e} m2",
+        f"y_shift to centre blade in pitch: {y_shift:.6g} m (rigid; metal angles unchanged).",
+        "Wall faces tagged from the O-grid j=0 ring (per-blade patches).",
+        *oh_notes,
+    ]
+    return MeshBuild(
+        n_cells=n_cells, n_points=len(points), n_faces=len(all_faces), patches=counts,
+        first_cell_m=first_cell, min_area_2d=a2, check_notes=notes, y_shift_m=y_shift,
+        pitch_m=pitch, z_thick_m=zth, blade_polys=blade_polys, x_in=x_in, x_out=x_out,
+        y_min=y_min, y_max=y_max, n_around=n_i, n_radial=n_rad, d_o_m=d_o,
+        mesh_kind=("cassette_OH" if cas is not None else ("passage_OH" if passage is not None else "body_fitted_OH")),
+    )
+
+
+
+def write_mesh_preview_png(
+    path: Path,
+    job: dict[str, Any],
+    spec: BladeSpec,
+    mesh: MeshBuild,
+) -> None:
+    """2D wire of the three blade walls — proof the load mesh is body-fitted."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=120)
+    colors = ("#c0392b", "#2471a3", "#117a65")
+    for k, poly in enumerate(mesh.blade_polys):
+        xs = [p[0] * 1000 for p in poly]
+        ys = [p[1] * 1000 for p in poly]
+        ax.plot(xs, ys, color=colors[k % 3], lw=1.4, label=f"blade{k}")
+    try:
+        from .geometry import passage_gap as _pg
+        if mesh.blade_polys:
+            gp = _pg(mesh.blade_polys[0], mesh.pitch_m or 0.0)
+            ss, ps1 = gp["ss"], gp["ps1"]
+            ax.fill(
+                list(ss[:, 0] * 1000) + list(ps1[::-1, 0] * 1000),
+                list(ss[:, 1] * 1000) + list(ps1[::-1, 1] * 1000),
+                color="#f9e79f", alpha=0.45, lw=0, zorder=0, label=f"gap g_min={gp['g_min']*1e3:.2f} mm",
+            )
+            ax.plot(ss[:, 0] * 1000, ss[:, 1] * 1000, color="#b7950b", lw=0.8, ls=":")
+            ax.plot(ps1[:, 0] * 1000, ps1[:, 1] * 1000, color="#b7950b", lw=0.8, ls=":")
+    except Exception:
+        pass
+    ax.axhline(mesh.y_min * 1000, color="0.5", ls="--", lw=0.6)
+    ax.axhline(mesh.y_max * 1000, color="0.5", ls="--", lw=0.6)
+    ax.axvline(mesh.x_in * 1000, color="0.7", ls=":", lw=0.5)
+    ax.axvline(mesh.x_out * 1000, color="0.7", ls=":", lw=0.5)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x axial [mm]")
+    ax.set_ylabel("y pitch [mm]")
+    ax.set_title(f"{job.get('name', 'cascade')} body-fitted metal (not stair-step)")
+    # Crop to [-1.5c, 2c]; extra dump after TE is computational, not the view.
+    try:
+        from .job import cascade_view_xlim_m
+        x0, x1 = cascade_view_xlim_m(job)
+        ax.set_xlim(x0 * 1000.0, x1 * 1000.0)
+    except Exception:
+        pass
+    ax.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path)
+    plt.close(fig)

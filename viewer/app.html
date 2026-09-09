@@ -1,0 +1,1602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ImpulseCalc3</title>
+  <style>
+    :root { color-scheme: light; --line: #d4d0c8; --muted: #5c5c5c; --ink: #1a1a1a; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: auto; }
+    body { font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; color: var(--ink); overflow-x: hidden; }
+    h1 { font-size: 1.1rem; margin: 0 0 .35rem; font-weight: 650; letter-spacing: -0.02em; }
+    h2 { font-size: .72rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: #444; margin: .7rem 0 .35rem; }
+    .viz-col h2 { display: none; }
+    .disc { background: #f4efe6; border: 1px solid #c9b48a; padding: .4rem .55rem; margin: 0 0 .6rem; font-size: .8rem; }
+    .fam { display: flex; flex-wrap: wrap; gap: .65rem 1.1rem; align-items: center; margin: .2rem 0 .8rem; }
+    .fam label { display: flex; flex-direction: row; align-items: center; gap: .3rem; font-size: .9rem; }
+    button { font: 14px system-ui; padding: .42rem .85rem; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: wait; }
+    #btn-undo:disabled { cursor: default; }
+    #long_job_panel {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 40;
+      margin: 0;
+      padding: .55rem .85rem;
+      background: #fff8e8;
+      border-bottom: 2px solid #b07018;
+    }
+    #long_job_panel.lj-active { display: block; }
+    #long_job_panel.lj-done-ok { border-color: #3a8a50; background: #eef8f0; }
+    #long_job_panel.lj-done-fail, #long_job_panel.lj-error { border-color: #a82818; background: #fde8e8; }
+    #long_job_phase { font-weight: 650; }
+    #long_job_panel.lj-running #long_job_phase { animation: lj-pulse 1.1s ease-in-out infinite; }
+    @keyframes lj-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .lj-line { font: 13px ui-monospace, monospace; margin: .2rem 0; }
+    #long_job_bar_wrap { margin: .45rem 0 .25rem; height: 12px; background: #fff; border: 1px solid #864; overflow: hidden; }
+    #long_job_bar {
+      height: 100%; width: 100%;
+      background: repeating-linear-gradient(-45deg, #c08030, #c08030 8px, #d49840 8px, #d49840 16px);
+      background-size: 22px 22px; animation: lj-stripe .8s linear infinite;
+    }
+    #long_job_bar.lj-cfd { animation: none; background: #c08030; }
+    #long_job_panel.lj-done-ok #long_job_bar { background: #4a9a60; animation: none; width: 100% !important; }
+    #long_job_panel.lj-min .lj-collapsible { display: none; }
+    #long_job_head { display: flex; align-items: center; gap: .5rem; }
+    #btn-lj-min { margin-left: auto; padding: .15rem .5rem; font-size: .8rem; }
+    @keyframes lj-stripe { from { background-position: 0 0; } to { background-position: 22px 0; } }
+    .badge { display: inline-block; font-size: .75rem; letter-spacing: .04em; padding: .12rem .45rem; border: 1px solid #555; margin-right: .35rem; }
+    .scoping { background: #eee; }
+    .field { background: #dceadf; }
+    .warn { color: #8a1c1c; }
+    .stage { height: 100vh; height: 100dvh; display: grid; grid-template-columns: 320px minmax(0, 1fr); }
+    @media (max-width: 860px) { .stage { grid-template-columns: 1fr; height: auto; min-height: 100vh; } }
+    .knobs-col { overflow-y: auto; height: 100vh; height: 100dvh; padding: .55rem .7rem 1rem; border-right: 1px solid var(--line); background: #fff; }
+    .viz-col { height: 100vh; height: 100dvh; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+    .below-fold { max-width: 1100px; margin: 1.25rem auto 2rem; padding: 0 1rem; }
+    .actions { position: sticky; top: 0; z-index: 5; background: #fff; padding: .4rem 0 .5rem; border-bottom: 1px solid var(--line); }
+    .knob-list { display: flex; flex-direction: column; gap: .55rem; }
+    .knob {
+      display: flex; flex-direction: column; gap: .18rem;
+      padding: .45rem .55rem .5rem; border: 1px solid var(--line); background: #fbfbfa;
+    }
+    .knob-head { display: flex; align-items: baseline; gap: .45rem; }
+    .knob-label { font-size: .82rem; font-weight: 600; }
+    .knob-sym { font: 13px ui-serif, Georgia, serif; color: #333; }
+    .knob-unit { font: 11px ui-monospace, monospace; color: var(--muted); margin-left: auto; }
+    .knob-ctrl { display: grid; grid-template-columns: 1fr 6.4rem; gap: .55rem; align-items: center; }
+    input[type=range] { width: 100%; accent-color: #3d5a4a; }
+    input[type=number], textarea, select { font: 13px ui-monospace, monospace; padding: .28rem .4rem; width: 100%; }
+    textarea { min-height: 7rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .35rem 0 .4rem; }
+    img#outline { flex: 1; width: 100%; height: 100%; min-height: 0; object-fit: contain; object-position: center; display: block; border: 0; background: #fff; }
+    #triangles { max-width: 100%; width: 100%; border: 1px solid #ccc; background: #fff; }
+    #field_plots img { max-width: 100%; border: 1px solid #ccc; background: #fafafa; }
+    #field_plots figcaption, figure figcaption { font-size: .8rem; color: #444; margin: .55rem 0 .2rem; }
+    figure { margin: 0 0 1rem; }
+    #triangle_table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+    #triangle_table th { text-align: left; font-weight: 500; padding: .28rem .4rem .28rem 0; border-bottom: 1px solid var(--line); }
+    #triangle_table td { font: 13px ui-monospace, monospace; padding: .28rem .35rem; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    #triangle_table caption { text-align: left; font-weight: 650; margin: 0 0 .45rem; caption-side: top; }
+    .hint { font-size: .8rem; color: var(--muted); margin: 0 0 .6rem; }
+    #profile_strip { font: 12px ui-monospace, monospace; background:#f3f7fb; border:1px solid #b7c9da; padding:.35rem .5rem; margin:.35rem 0 .55rem; }
+    pre { background: #f5f5f5; padding: .6rem; overflow: auto; font-size: .78rem; }
+    .hid { display: none; }
+    footer { margin-top: .4rem; font-size: .75rem; color: #555; flex: 0 0 auto; }
+
+    #ntrs_table { width: 100%; border-collapse: collapse; font-size: .82rem; margin: .7rem 0 1rem; }
+    #ntrs_table th, #ntrs_table td { padding: .28rem .35rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    #ntrs_table th { text-align: left; font-weight: 500; }
+    #ntrs_table td { font: 12px ui-monospace, monospace; }
+    #ntrs_table caption { text-align: left; font-weight: 650; margin: 0 0 .35rem; caption-side: top; }
+    #ntrs_banner { font-size: .8rem; color: #5a4a28; background: #f4efe6; border: 1px solid #c9b48a; padding: .4rem .55rem; margin: .55rem 0 .45rem; }
+    #geom_banner { font-size: .85rem; color: #5c2e0a; background: #fde8c8; border: 1px solid #c47b1a; padding: .45rem .6rem; margin: .4rem 0; display: none; }
+    #geom_banner.show { display: block; }
+    .st-HIGH, .st-LOW { background: #fde8e8; border-color: #a82818; }
+    .st-NOMINAL { background: #eef8f0; border-color: #3a8a50; }
+    .st-INFO { background: #eee; }
+    .st-NA { background: #f5f5f5; }
+
+    .knob.sys-metal { border-left: 5px solid #2a7a68; background: #f4faf8; }
+    .knob.sys-pack { border-left: 5px solid #5a4a8a; background: #f7f5fb; }
+    .knob.sys-rotor { border-left: 5px solid #b05612; background: #fbf6f0; }
+    .knob.sys-gas { border-left: 5px solid #1d5a8a; background: #f3f7fb; }
+    .knob.sys-cycle { border-left: 5px solid #8a2040; background: #fbf4f6; }
+    .sys-legend { display: flex; flex-wrap: wrap; gap: .35rem .7rem; font-size: .72rem; margin: 0 0 .55rem; }
+    .sys-legend span { display: inline-flex; align-items: center; gap: .3rem; }
+    .sys-sw { width: .7rem; height: .7rem; display: inline-block; border: 1px solid #333; }
+    .sys-sw.metal { background: #2a7a68; }
+    .sys-sw.pack { background: #5a4a8a; }
+    .sys-sw.rotor { background: #b05612; }
+    .sys-sw.gas { background: #1d5a8a; }
+    .sys-sw.cycle { background: #8a2040; }
+    #loss_table { width: 100%; border-collapse: collapse; font-size: .86rem; margin: 1rem 0; }
+    #loss_table th { text-align: left; font-weight: 500; padding: .28rem .4rem .28rem 0; border-bottom: 1px solid var(--line); }
+    #loss_table td { font: 13px ui-monospace, monospace; padding: .28rem .35rem; border-bottom: 1px solid var(--line); text-align: right; }
+    #loss_banner { font-size: .8rem; color: #5a4a28; background: #f4efe6; border: 1px solid #c9b48a; padding: .4rem .55rem; margin: .8rem 0 .4rem; }
+
+    .solve-wrap { position: relative; display: inline-block; }
+    #solve_times { display: none; position: absolute; left: 0; top: calc(100% + 4px); z-index: 40; min-width: 18rem; background: #161616; color: #eee; border: 1px solid #555; padding: .35rem; }
+    #solve_times.open { display: block; }
+    #solve_times button { display: block; width: 100%; text-align: left; margin: .15rem 0; font: 12px ui-monospace, monospace; }
+    #solve_times .st-cap { font-size: .72rem; color: #bbb; padding: .2rem .25rem .35rem; }
+    pre { max-height: 8rem; }
+
+    #inlet_modal {
+      display: none; position: fixed; inset: 0; z-index: 60;
+      background: rgba(18,18,18,.42); overflow: auto;
+      padding: 1.2rem .7rem 2rem;
+    }
+    #inlet_modal.open { display: block; }
+    .inlet-card {
+      width: min(380px, 100%); margin: 0 auto; background: #fff;
+      border: 1px solid var(--line); padding: .65rem .7rem 1rem;
+    }
+    .inlet-card h2 { display: block; font-size: .95rem; letter-spacing: 0; text-transform: none; color: var(--ink); margin: 0 0 .4rem; }
+    .inlet-card .knob-list { margin-top: .45rem; }
+    button.knob-open {
+      width: 100%; text-align: left; font: inherit; cursor: pointer;
+      padding: .45rem .55rem .5rem;
+    }
+    #btn-inlet {
+      display: block; width: 100%; margin: .35rem 0 .7rem;
+      padding: .85rem .75rem;
+      font: 600 1.05rem ui-sans-serif, system-ui, sans-serif;
+      text-align: center; cursor: pointer;
+      color: #fff; background: #1d5a8a; border: 0;
+      letter-spacing: .01em;
+    }
+    #btn-inlet:hover { background: #16486e; }
+    .inlet-card { width: min(560px, 100%) !important; }
+    .w1-readout { font: 15px ui-monospace, monospace; padding: .15rem 0 0; }
+    #eos_resid_row { font: 12px ui-monospace, monospace; margin: .35rem 0 .2rem; }
+    #saved_tests { font-size: .82rem; margin: .35rem 0 .6rem; }
+    #saved_tests label { display: flex; gap: .4rem; align-items: flex-start; margin: .2rem 0; }
+    .pred-tag { font-size: .72rem; letter-spacing: .04em; border: 1px solid #555; padding: .05rem .35rem; }
+
+    .ntrs-tag { font: 11px ui-monospace, monospace; color: #5a4a28; margin-top: .12rem; line-height: 1.35; }
+    .ntrs-tag a { color: #3d4a8a; }
+    .knob.st-HIGH { background: #fde8e8; }
+    .knob.st-LOW { background: #fde8e8; }
+    .knob.st-NOMINAL { background: #eef8f0; }
+    #identities { margin: 1.2rem 0 1.4rem; }
+    #identities h2 { display: block; font-size: .95rem; letter-spacing: 0; text-transform: none; color: var(--ink); }
+    #identities ul { margin: .35rem 0 0; padding: 0; list-style: none; }
+    #identities li { font-size: .86rem; padding: .28rem 0; border-bottom: 1px solid var(--line); }
+    #identities .syms { font-size: .78rem; color: var(--muted); }
+    #identities a { color: #3d4a8a; }
+    #mesh_modal {
+      display: none; position: fixed; inset: 0; z-index: 60;
+      background: rgba(18,18,18,.42); overflow: auto;
+      padding: 1.2rem .7rem 2rem;
+    }
+    #mesh_modal.open { display: block; }
+  </style>
+</head>
+<body>
+  <div id="long_job_panel" aria-live="polite" role="status">
+    <div id="long_job_head">
+      <span class="lj-pulse">●</span> <span id="long_job_phase">idle</span>
+      <span class="lj-line">elapsed <b id="long_job_elapsed">0:00</b></span>
+      <button type="button" id="btn-lj-min" title="Minimize or expand job panel">Min</button>
+    </div>
+    <div class="lj-collapsible">
+      <div class="lj-line" id="long_job_heartbeat">idle</div>
+      <div class="lj-line" id="long_job_detail"></div>
+      <div id="long_job_bar_wrap"><div id="long_job_bar"></div></div>
+      <div class="lj-line" id="long_job_keep">Keep this tab open. Ticking elapsed means it is still running, not stuck. This address is this machine only — not a share link.</div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <section class="knobs-col">
+      <h1>ImpulseCalc 3.5 <span style="font-weight:500;color:#666;font-size:.85rem">local</span></h1>
+      <div class="disc">
+        Engineering aid, <b>not a flight certificate</b>.
+        <span class="badge scoping" id="auth">SCOPING</span>
+        <span class="badge" id="pred">PREDICTED</span>
+      </div>
+      <p class="hint" id="family">One solver — machined 2D turbine section. Dual-arc + round LE/TE (L_in=0) or pointed parallel legs + round caps (L_in&gt;0). Not MOC. Not a photo.</p>
+      <div class="actions">
+        <button type="button" id="btn-undo" disabled>Undo</button>
+        <button type="button" id="btn-mesh">Run mesh</button>
+        <span class="solve-wrap" id="solve_wrap">
+          <button type="button" id="btn-solve">Run solve</button>
+          <div id="solve_times" role="menu">
+            <div class="st-cap">endTime — hover 1.5 s. Min 7.98×10⁻⁵ s. Not 1-chord smoke.</div>
+            <button type="button" data-t="7.9827173e-05">1.2 Lx/a · 7.98×10⁻⁵ s · ~5 min</button>
+            <button type="button" data-t="1.3304529e-04">2 Lx/a · 1.33×10⁻⁴ s</button>
+            <button type="button" data-t="1.9956794e-04">3 Lx/a · 2.00×10⁻⁴ s</button>
+            <button type="button" data-t="2.6609058e-04">4 Lx/a · 2.66×10⁻⁴ s · ~14 min</button>
+          </div>
+        </span>
+        <span id="ofnote"></span>
+      </div>
+      <h2>Human inputs</h2>
+      <div class="actions" style="border:0;padding:0;position:static">
+        <button type="button" id="btn-inputs">Inputs</button>
+        <button type="button" id="btn-update-profile" title="Re-apply saved profile to outline">Update profile</button>
+        <button type="button" id="btn-inlet">Change inlet conditions</button>
+      </div>
+      <div id="profile_strip" class="hint">Central profile: not written yet. Open Inputs (popup) → Update.</div>
+      <p class="hint">That button is the gas page (p, T, ρ, μ, γ, R, W1). Not Pc. Metal sliders stay below. Undo restores the last committed knob snapshot (Ctrl+Z). PREDICTED. Cascade plots crop to x ∈ [−1.5c, 2c]; dump to 6c is computational, not the view.</p>
+      <div class="knob-list" id="knob_list">
+        <div id="metal-knobs">
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Upper sagitta</span><span class="knob-sym">hu</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="hu_mm" min="1" max="12" step="0.1" value="5"/>
+              <input type="number" id="hu_mm" step="0.1" min="1" max="12" value="5"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Lower sagitta</span><span class="knob-sym">hl</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="hl_mm" min="0.4" max="10" step="0.1" value="2.2"/>
+              <input type="number" id="hl_mm" step="0.1" min="0.4" max="10" value="2.2"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">LE fillet</span><span class="knob-sym">r_LE</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="le_mm" min="0.05" max="2" step="0.05" value="0.4"/>
+              <input type="number" id="le_mm" step="0.05" min="0.05" max="2" value="0.4"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">TE fillet</span><span class="knob-sym">r_TE</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="te_mm" min="0" max="2" step="0.05" value="0"/>
+              <input type="number" id="te_mm" step="0.05" min="0" max="2" value="0"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Inlet straight</span><span class="knob-sym">L_in</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="lin_mm" min="0" max="12" step="0.05" value="4.25"/>
+              <input type="number" id="lin_mm" step="0.05" min="0" max="12" value="4.25"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Outlet straight</span><span class="knob-sym">L_out</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="lout_mm" min="0" max="12" step="0.05" value="4.25"/>
+              <input type="number" id="lout_mm" step="0.05" min="0" max="12" value="4.25"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Wall thickness</span><span class="knob-sym">t</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="t_mm" min="0.3" max="4" step="0.05" value="1.4"/>
+              <input type="number" id="t_mm" step="0.05" min="0.3" max="4" value="1.4"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Transition radius</span><span class="knob-sym">R_tr</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="r_tr_mm" min="0.5" max="8" step="0.1" value="3.5"/>
+              <input type="number" id="r_tr_mm" step="0.1" min="0.5" max="8" value="3.5"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Inner trans arc</span><span class="knob-sym">R_main</span><span class="knob-unit">mm</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="r_main_mm" min="1" max="20" step="0.1" value="4.8"/>
+              <input type="number" id="r_main_mm" step="0.1" min="1" max="20" value="4.8"/>
+            </div>
+          </div>
+          <div class="knob sys-metal">
+            <div class="knob-head"><span class="knob-label">Extra splay off outer tangent</span><span class="knob-sym">ψ</span><span class="knob-unit">deg</span></div>
+            <div class="knob-ctrl">
+              <input type="range" data-sync="psi_tr_deg" min="0" max="40" step="1" value="0"/>
+              <input type="number" id="psi_tr_deg" step="1" min="0" max="40" value="0"/>
+            </div>
+          </div>
+          <p class="hint">Metal is millimetres (absolute). L=0 is the C. L&gt;0 extends both walls parallel, heading 90°+ψ from +x (ψ from vertical, ~20°), constant width t. That is the original tip path, down. Not a chord-pointed wedge. Chord is axial length, not a zoom. Surface Mach is an OpenFOAM output, not a slider. PREDICTED.</p>
+        </div>
+
+        <div class="knob sys-pack" id="pack">
+          <div class="knob-head"><span class="knob-label">Blade spacing</span><span class="knob-sym">s</span><span class="knob-unit">mm</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="s_mm" min="3" max="20" step="0.05" value="8.1"/>
+            <input type="number" id="s_mm" step="0.05" min="3" max="20" value="8.1"/>
+          </div>
+          <p class="hint" id="z_readout">Z derived = 2π r / s (wheel count). σ = c/s. 2D pack is s, not Z. Unsigned.</p>
+        </div>
+        <div class="knob sys-pack" id="knob_sigma">
+          <div class="knob-head"><span class="knob-label">Solidity</span><span class="knob-sym">σ</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="sigma" min="0.2" max="3" step="0.01" value="1.6"/>
+            <input type="number" id="sigma" step="0.01" min="0.2" max="3" value="1.6"/>
+          </div>
+          <div class="ntrs-tag" id="ntrs_stamp_sigma">NOMINAL vs NTRS <a href="https://ntrs.nasa.gov/citations/19740025363">19740025363</a> = 0.8 (NASA-SP-290) · Zw</div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Chord</span><span class="knob-sym">c</span><span class="knob-unit">m</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="c" min="0.002" max="0.05" step="0.001" value="0.01"/>
+            <input type="number" id="c" step="0.001" min="0.002" max="0.05" value="0.01"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Mean radius</span><span class="knob-sym">r</span><span class="knob-unit">m</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="r" min="0.01" max="0.1" step="0.001" value="0.0375"/>
+            <input type="number" id="r" step="0.001" min="0.01" max="0.1" value="0.0375"/>
+          </div>
+        </div>
+        <div class="knob sys-rotor">
+          <div class="knob-head"><span class="knob-label">Shaft speed</span><span class="knob-sym">N</span><span class="knob-unit">rpm</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="rpm" min="10000" max="80000" step="100" value="40000"/>
+            <input type="number" id="rpm" step="100" min="10000" max="80000" value="40000"/>
+          </div>
+        </div>
+        <div class="knob sys-rotor">
+          <div class="knob-head"><span class="knob-label">Turbine/blade speed</span><span class="knob-sym">U</span><span class="knob-unit">m/s</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="U" min="50" max="500" step="1" value="157.1"/>
+            <input type="number" id="U" step="1" min="50" max="500" value="157.1"/>
+          </div>
+        </div>
+        <button type="button" class="knob sys-pack knob-open" id="btn-mesh-counts">
+          <div class="knob-head"><span class="knob-label">Mesh counts</span><span class="knob-sym">CFD</span><span class="knob-unit">PREDICTED</span></div>
+        </button>
+        <div class="knob sys-gas" id="w1_strip">
+          <div class="knob-head"><span class="knob-label">Inlet relative velocity</span><span class="knob-sym">W1</span><span class="knob-unit">m/s</span></div>
+          <div class="w1-readout" id="w1_readout">950</div>
+          <div class="ntrs-tag" id="ntrs_stamp_w1">NOMINAL vs NTRS <a href="https://ntrs.nasa.gov/citations/19680010807">19680010807</a> = 1.5–5.0 · sonic = 1.0 INFO not a fail · Mw1</div>
+        </div>
+        <div class="knob sys-rotor" id="knob_beta2">
+          <div class="knob-head"><span class="knob-label">Relative outlet</span><span class="knob-sym">β2</span><span class="knob-unit">deg</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="beta2" min="-90" max="90" step="1" value="-72"/>
+            <input type="number" id="beta2" step="1" min="-90" max="90" value="-72"/>
+          </div>
+          <div class="ntrs-tag" id="ntrs_stamp_beta2">NOMINAL vs NTRS <a href="https://ntrs.nasa.gov/citations/19940018586">19940018586</a> = 140 deg · context 160 deg NTRS <a href="https://ntrs.nasa.gov/citations/19920066198">19920066198</a> · |β1−β2|</div>
+        </div>
+      </div>
+
+      <p>Ft <b id="ft">—</b> N &nbsp; Fd <b id="fd">—</b> N &nbsp; success <b id="ok">—</b>
+        <span class="pred-tag">PREDICTED</span></p>
+      <div class="actions" id="save_tests_bar">
+        <button type="button" id="btn-save-test" disabled>Save test</button>
+        <button type="button" id="btn-dl-tests" disabled>Download selected</button>
+      </div>
+      <p class="hint">Save test after mesh or solve. Records are PREDICTED — saved Ft is not a design load. Download writes a local file on this computer (no server path).</p>
+      <div id="saved_tests"></div>
+      <p class="warn" id="err"></p>
+    </section>
+
+    <section class="viz-col">
+      <div id="geom_banner"></div>
+      <img id="outline" alt="cascade metal from the real mesh writer" src="/outline.png"/>
+    </section>
+  </div>
+
+  <section class="below-fold">
+      <table id="triangle_table">
+        <caption>
+          Velocity triangles
+          <span class="badge scoping" id="tri_auth">SCOPING</span>
+          <span class="badge" id="tri_pred">PREDICTED</span>
+        </caption>
+        <tbody>
+          <tr><th>Inlet absolute velocity (C1)</th><td id="tri_c1">—</td><td>m/s</td></tr>
+          <tr><th>Outlet absolute velocity (C2)</th><td id="tri_c2">—</td><td>m/s</td></tr>
+          <tr><th>Inlet relative velocity (W1)</th><td id="tri_w1">—</td><td>m/s</td></tr>
+          <tr><th>Outlet relative velocity (W2)</th><td id="tri_w2">—</td><td>m/s</td></tr>
+          <tr><th>Inlet abs. angle (α1)</th><td id="tri_a1">—</td><td>deg</td></tr>
+          <tr><th>Outlet abs. angle (α2)</th><td id="tri_a2">—</td><td>deg</td></tr>
+          <tr><th>Relative inlet (β1)</th><td id="tri_b1">—</td><td>deg</td></tr>
+          <tr><th>Relative outlet (β2)</th><td id="tri_b2">—</td><td>deg</td></tr>
+          <tr><th>Turbine/blade speed (U)</th><td id="tri_u">—</td><td>m/s</td></tr>
+          <tr><th>Relative inlet Mach (Mw1) derived</th><td id="tri_mw1">—</td><td>—</td></tr>
+          <tr><th>Axial Mach Max,1 = Mw1 cos β1</th><td id="tri_max1">—</td><td>—</td></tr>
+          <tr><th>Chord Reynolds Rec</th><td id="tri_rec">—</td><td>—</td></tr>
+          <tr><th>Stage loading ψ = Δh0 / U²</th><td id="tri_psi">—</td><td>—</td></tr>
+          <tr><th>U / C1</th><td id="tri_uc1">—</td><td>—</td></tr>
+          <tr><th>Unique incidence (Max,1 &lt; 1, Mw1 ≥ 1)</th><td id="tri_ui">—</td><td>—</td></tr>
+          <tr><th>Open-annulus ṁ (derived)</th><td id="tri_mdot_open">—</td><td>kg/s</td></tr>
+          <tr><th>Implied blockage vs ṁ_GG</th><td id="tri_block">—</td><td>—</td></tr>
+        </tbody>
+      </table>
+
+      <div id="loss_panel">
+        <div id="loss_banner">SCOPING / PREDICTED loss stack — Ainley–Mathieson profile Yp. Kacker–Okapuu shock/tip not wired. Not stage η. Not from OpenFOAM. Not STAND-true.</div>
+        <table id="loss_table">
+          <caption>Losses (column A) <span class="badge scoping">SCOPING</span> <span class="badge">PREDICTED</span></caption>
+          <tbody>
+            <tr><th>Euler work U(Cθ1−Cθ2) PREDICTED</th><td id="loss_euler">—</td><td>J/kg</td></tr>
+            <tr><th>Euler power ṁ·Δh_Euler PREDICTED</th><td id="loss_power">—</td><td>W</td></tr>
+            <tr><th>OF blade power Ft·U (per blade) FIELD_CFD</th><td id="loss_of_power">—</td><td>W</td></tr>
+            <tr><th>AM profile Yp PREDICTED book</th><td id="loss_yp">—</td><td>—</td></tr>
+            <tr><th>Relative Mach Mw1 meanline PREDICTED</th><td id="loss_mw">—</td><td>—</td></tr>
+            <tr><th>Relative Mach Mw1 OF |U|/a</th><td id="loss_mw_of">—</td><td>—</td></tr>
+            <tr><th>OF |W| inlet</th><td id="loss_w_in">—</td><td>m/s</td></tr>
+            <tr><th>OF |W| outlet</th><td id="loss_w_out">—</td><td>m/s</td></tr>
+            <tr><th>OF |W2|/|W1|</th><td id="loss_w_ratio">—</td><td>—</td></tr>
+            <tr><th>KO shock</th><td id="loss_shock">not wired</td><td></td></tr>
+            <tr><th>KO tip / secondary</th><td id="loss_tip">not wired</td><td></td></tr>
+            <tr><th>η from CFD</th><td>forbidden</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="ntrs_panel">
+        <div id="ntrs_banner">SCOPING / PREDICTED — literature, not a signed FIRMA spec. Empty until first outline.</div>
+        <table id="ntrs_table">
+          <caption>Off-nominal vs NTRS</caption>
+          <thead>
+            <tr><th>status</th><th>quantity</th><th>this value</th><th>literature bound</th><th>% vs bound</th><th>report</th></tr>
+          </thead>
+          <tbody id="ntrs_body"></tbody>
+        </table>
+      </div>
+
+      <section id="identities">
+        <h2>Identities (cheat sheet)</h2>
+        <p class="hint">PREDICTED until STAND. Cited NTRS bounds only — not invented station numbers. η from CFD: forbidden.</p>
+        <ul>
+          <li>density (ρ) = pressure (p) / (specific gas constant (R) × temperature (T)) by default. Edit ρ to hold it; residual |p − ρ R T| / p while held.</li>
+          <li>sound speed (a) = √(γ R T); relative inlet Mach (Mw1) = |W1| / a. TN D-4422 published sweep 1.5–5.0, <a href="https://ntrs.nasa.gov/citations/19680010807">NTRS 19680010807</a>. 1.0 ≤ Mw1 &lt; 1.5: method valid, off the 1968 chart (INFO, not NOMINAL). Do not read thickness/solidity off those plots.</li>
+          <li>Metal knobs (mm): hu, hl, r_LE, r_TE, L_in, L_out, t, R_tr, R_main, ψ_tr. β1/β2 stagger/heading. Mw1 = W1/a derived, display-only. ML/MU are not metal.</li>
+          <li>blade speed (U) = ω r<sub>m</sub> = 2π N/60 · r<sub>m</sub>. N shaft rpm, r<sub>m</sub> mean radius. PREDICTED identity, not an NTRS nominal.</li>
+          <li>Euler Δh<sub>0</sub> = U (C<sub>θ1</sub> − C<sub>θ2</sub>); power ṁ Δh<sub>0</sub> PREDICTED meanline.</li>
+          <li>OF power per blade = F<sub>t</sub> · U after force_plateau only; not η.</li>
+          <li>Zweifel (Zw) = 2 (s / c<sub>x</sub>) cos²(β2) (tan β1 − tan β2) SP-290. NOMINAL 0.8, <a href="https://ntrs.nasa.gov/citations/19740025363">NASA-SP-290 / NTRS 19740025363</a>. s pitch, c<sub>x</sub> axial chord, β from axial.</li>
+          <li>turning |β1 − β2|: NOMINAL 140 deg, <a href="https://ntrs.nasa.gov/citations/19940018586">NTRS 19940018586</a>; context 160 deg <a href="https://ntrs.nasa.gov/citations/19920066198">NTRS 19920066198</a>.</li>
+          <li>t<sub>end</sub> ≥ max(5 c/W1, 1.2 L<sub>x</sub>/a). c chord, L<sub>x</sub> domain length, a sound speed.</li>
+          <li>outlet p: waveTransmissive, fieldInf = p1, not 0.95 p1.</li>
+          <li>η from CFD: forbidden.</li>
+        </ul>
+        <p class="syms">Symbols: ρ density, p pressure, R specific gas constant, T temperature, γ ratio of specific heats, a sound speed, W1 inlet relative velocity, Mw1 relative inlet Mach, U blade speed, ω shaft angular speed, r<sub>m</sub> mean radius, N rpm, C<sub>θ</sub> absolute whirl, ṁ mass flow, Δh<sub>0</sub> Euler work, F<sub>t</sub> tangential force, Zw Zweifel, s pitch, c<sub>x</sub> axial chord, β relative flow angle, L<sub>x</sub> axial domain.</p>
+      </section>
+      <figure>
+        <figcaption>Velocity triangles — SCOPING / PREDICTED (meanline, not OpenFOAM)</figcaption>
+        <img id="triangles" alt="velocity triangles from meanline" src="/plot/triangles.png"/>
+      </figure>
+      <div id="field_plots" class="hid">
+        <p>Field plots
+          <span class="badge scoping" id="plot_auth">SCOPING</span>
+          <span class="badge" id="plot_pred">PREDICTED</span>
+          until FIELD_CFD on this machine, this case.
+        </p>
+        <p class="hint">Cascade plots crop to x ∈ [−1.5c, 2c]; dump to 6c is computational, not the view.</p>
+        <figure>
+          <figcaption>2D streamlines — OpenFOAM U on the slider mesh. Relative frame W. PREDICTED. Not a 3D poster. Not stage η.</figcaption>
+          <img id="contour_stream" alt="2D OpenFOAM streamlines on cascade mesh" src=""/>
+        </figure>
+        <figure>
+          <figcaption>Mach — |U|/a from OF p and rho. Shocks = steep Mach jumps. PREDICTED.</figcaption>
+          <img id="contour_M" alt="Mach field from OpenFOAM" src=""/>
+        </figure>
+        <figure>
+          <figcaption>|grad p| shock sensor — not Kacker–Okapuu, not STAND-true.</figcaption>
+          <img id="contour_shock" alt="pressure-gradient shock sensor" src=""/>
+        </figure>
+        <figure>
+          <figcaption>Fluid velocity U — |U| color, arrows from OpenFOAM (relative frame W). PREDICTED.</figcaption>
+          <img id="contour_U" alt="OpenFOAM velocity field with arrows" src=""/>
+        </figure>
+        <figure>
+          <figcaption>Force history Fx vs t — PREDICTED until plateau</figcaption>
+          <img id="force_history" alt="force history Fx vs t" src=""/>
+        </figure>
+        <figure>
+          <figcaption>p-field — useful, not the flow</figcaption>
+          <img id="contour_p" alt="p-field contour with cups" src=""/>
+        </figure>
+        <figure>
+          <figcaption>blade0 wall Cp — p from wall patch, not a chord-line cut</figcaption>
+          <img id="wall_cp_blade0" alt="blade0 wall Cp from wall patch" src=""/>
+        </figure>
+      </div>
+  </section>
+  <pre id="log"></pre>
+  <footer>
+    Local folder UI. Close the start window to stop. This address is not a share link.
+    Share later = HTTPS landing + portable payload — this ticket has no exe.
+  </footer>
+
+  <div id="inlet_modal" role="dialog" aria-labelledby="inlet_title" aria-modal="true">
+    <div class="inlet-card">
+      <h2 id="inlet_title">Inlet conditions (working fluid)</h2>
+      <div class="disc">PREDICTED; unsigned gas; not Pc. ρ follows p/(R T) until you edit ρ. Then it holds. Follow EOS puts it back. OF and ṁ do not rewrite p1.</div>
+      <div id="eos_resid_row">ρ mode: <b id="rho_mode">follows p/(R T)</b> &nbsp; residual |p − ρ R T| / p = <b id="eos_resid">0%</b>
+        <button type="button" id="btn-rho-follow">Follow EOS</button>
+      </div>
+      <div class="knob-list">
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Inlet pressure</span><span class="knob-sym">p1</span><span class="knob-unit">Pa</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="p1" min="50000" max="2000000" step="1000" value="550000"/>
+            <input type="number" id="p1" step="1000" min="50000" max="2000000" value="550000"/>
+          </div>
+        </div>
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Inlet temperature</span><span class="knob-sym">T1</span><span class="knob-unit">K</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="T1" min="400" max="2000" step="10" value="1100"/>
+            <input type="number" id="T1" step="10" min="400" max="2000" value="1100"/>
+          </div>
+        </div>
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Inlet density</span><span class="knob-sym">ρ1</span><span class="knob-unit">kg/m³</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="rho1" min="0.05" max="20" step="0.01" value="1.5625"/>
+            <input type="number" id="rho1" step="0.01" min="0.05" max="20" value="1.5625"/>
+          </div>
+        </div>
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Dynamic viscosity</span><span class="knob-sym">μ</span><span class="knob-unit">Pa·s</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="mu" min="1e-6" max="2e-4" step="1e-6" value="4.5e-05"/>
+            <input type="number" id="mu" step="1e-6" min="1e-6" max="2e-4" value="4.5e-05"/>
+          </div>
+        </div>
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Ratio of specific heats</span><span class="knob-sym">γ</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="gamma" min="1.1" max="1.67" step="0.01" value="1.3"/>
+            <input type="number" id="gamma" step="0.01" min="1.1" max="1.67" value="1.3"/>
+          </div>
+        </div>
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Specific gas constant</span><span class="knob-sym">R</span><span class="knob-unit">J/(kg·K)</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="Rspec" min="150" max="500" step="1" value="320"/>
+            <input type="number" id="Rspec" step="1" min="150" max="500" value="320"/>
+          </div>
+        </div>
+        <div class="knob sys-gas">
+          <div class="knob-head"><span class="knob-label">Inlet relative velocity</span><span class="knob-sym">W1</span><span class="knob-unit">m/s</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="W1" min="200" max="2000" step="10" value="950"/>
+            <input type="number" id="W1" step="10" min="200" max="2000" value="950"/>
+          </div>
+          <div class="ntrs-tag" id="ntrs_stamp_w1_inlet">NOMINAL vs NTRS <a href="https://ntrs.nasa.gov/citations/19680010807">19680010807</a> = 1.5–5.0 · sonic = 1.0 INFO not a fail · Mw1</div>
+          <div class="ntrs-tag" id="mw1_derived">Mw1 = W1/a (derived, display-only) —</div>
+        </div>
+        <div class="knob sys-rotor" id="knob_beta1">
+          <div class="knob-head"><span class="knob-label">Relative inlet</span><span class="knob-sym">β1</span><span class="knob-unit">deg</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="beta1" min="-90" max="90" step="1" value="72"/>
+            <input type="number" id="beta1" step="1" min="-90" max="90" value="72"/>
+          </div>
+          <div class="ntrs-tag" id="ntrs_stamp_beta1">NOMINAL vs NTRS <a href="https://ntrs.nasa.gov/citations/19940018586">19940018586</a> = 140 deg · context 160 deg NTRS <a href="https://ntrs.nasa.gov/citations/19920066198">19920066198</a> · |β1−β2|</div>
+        </div>
+        <div class="knob sys-rotor">
+          <div class="knob-head"><span class="knob-label">Turbine/blade speed</span><span class="knob-sym">U</span><span class="knob-unit">m/s</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="U_inlet" min="50" max="500" step="1" value="157.1"/>
+            <input type="number" id="U_inlet" step="1" min="50" max="500" value="157.1"/>
+          </div>
+        </div>
+        <div class="knob sys-cycle">
+          <div class="knob-head"><span class="knob-label">Engine mass flow</span><span class="knob-sym">ṁ<sub>TCA</sub></span><span class="knob-unit">kg/s</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="mdot_tca" min="0.01" max="20" step="0.1" value="4"/>
+            <input type="number" id="mdot_tca" step="0.1" min="0.01" max="20" value="4"/>
+          </div>
+        </div>
+        <div class="knob sys-cycle">
+          <div class="knob-head"><span class="knob-label">GG mass flow (cycle card, not cascade BC)</span><span class="knob-sym">ṁ<sub>GG</sub></span><span class="knob-unit">kg/s</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="mdot_gg" min="0.01" max="5" step="0.01" value="0.40"/>
+            <input type="number" id="mdot_gg" step="0.01" min="0.01" max="5" value="0.40"/>
+          </div>
+          <div class="ntrs-tag">Open-annulus ṁ is derived. Implied blockage = 1 − ṁ_GG / ṁ_open. Not a metal input.</div>
+        </div>
+        <div class="knob sys-cycle">
+          <div class="knob-head"><span class="knob-label">Mixture ratio</span><span class="knob-sym">OF</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="OF" min="0.2" max="3" step="0.01" value="1.20"/>
+            <input type="number" id="OF" step="0.01" min="0.2" max="3" value="1.20"/>
+          </div>
+        </div>
+      </div>
+      <div class="actions"><button type="button" id="btn-inlet-close">Close</button></div>
+    </div>
+  </div>
+
+  <div id="mesh_modal" role="dialog" aria-labelledby="mesh_title" aria-modal="true">
+    <div class="inlet-card">
+      <h2 id="mesh_title">Mesh counts</h2>
+      <div class="disc">PREDICTED CFD discretization. n_blades_cascade stays 3 (not exposed). Dump x_dn_c default 6. Cascade view still crops to [−1.5c, 2c].</div>
+      <div class="knob-list">
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Around blade</span><span class="knob-sym">n_around</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="n_around" min="24" max="200" step="1" value="56"/>
+            <input type="number" id="n_around" step="1" min="24" max="200" value="56"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">O-grid radial</span><span class="knob-sym">n_radial</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="n_radial" min="4" max="40" step="1" value="12"/>
+            <input type="number" id="n_radial" step="1" min="4" max="40" value="12"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Inlet cells</span><span class="knob-sym">n_inlet</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="n_inlet" min="4" max="40" step="1" value="10"/>
+            <input type="number" id="n_inlet" step="1" min="4" max="40" value="10"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Outlet cells</span><span class="knob-sym">n_outlet</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="n_outlet" min="8" max="80" step="1" value="28"/>
+            <input type="number" id="n_outlet" step="1" min="8" max="80" value="28"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Cyclic pitch cells</span><span class="knob-sym">n_cyclic</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="n_cyclic" min="4" max="40" step="1" value="16"/>
+            <input type="number" id="n_cyclic" step="1" min="4" max="40" value="16"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Inlet dump</span><span class="knob-sym">x_up/c</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="x_up_c" min="0.5" max="4" step="0.1" value="1.5"/>
+            <input type="number" id="x_up_c" step="0.1" min="0.5" max="4" value="1.5"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Outlet dump</span><span class="knob-sym">x_dn/c</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="x_dn_c" min="1" max="12" step="0.1" value="6"/>
+            <input type="number" id="x_dn_c" step="0.1" min="1" max="12" value="6"/>
+          </div>
+        </div>
+        <div class="knob sys-pack">
+          <div class="knob-head"><span class="knob-label">Stretch</span><span class="knob-sym">stretch</span><span class="knob-unit">—</span></div>
+          <div class="knob-ctrl">
+            <input type="range" data-sync="stretch" min="1.0" max="2.0" step="0.01" value="1.35"/>
+            <input type="number" id="stretch" step="0.01" min="1.0" max="2.0" value="1.35"/>
+          </div>
+        </div>
+      </div>
+      <div class="actions"><button type="button" id="btn-mesh-close">Close</button></div>
+    </div>
+  </div>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const UNDO_MAX = 40;
+  let packingDriver = "pitch";
+  let uFromRpm = true;
+  let rhoHeld = false;
+  let timer = null;
+  let outlineSeq = 0;
+  let inFlight = false;
+  let poll = null;
+  let undoStack = [];
+  let committed = null;
+  let lastOutlineTriangles = null;
+  let lastNtrs = null;
+  let solveTEnd = 7.9827173e-05;
+  let solveHover = null;
+  let lastOfStation = null;
+  let lastFlags = null;
+  let lastAuthority = "SCOPING";
+  let lastFt = null;
+  let lastFd = null;
+  let lastEuler = null;
+  let lastMw1 = null;
+  let saveArmed = false;
+  let savedTests = [];
+
+  function family() { return "impulse_bucket"; }
+  function showFam() { /* one solver — no family switching */ }
+  function paintHc() {}
+  function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+  function setPair(id, v) {
+    const n = $(id);
+    const s = document.querySelector('input[type=range][data-sync="' + id + '"]');
+    if (n) n.value = v;
+    if (s && v != null && Number.isFinite(Number(v))) s.value = v;
+  }
+
+  function knobs() {
+    const k = {
+      family: "impulse_bucket",
+      s_mm: num($("s_mm").value),
+      sigma: num($("sigma").value),
+      c: num($("c").value),
+      r: num($("r").value),
+      packing_driver: packingDriver,
+      W1: num($("W1").value),
+      p1: num($("p1").value),
+      T1: num($("T1").value),
+      rho1_kg_m3: num($("rho1").value),
+      rho_held: rhoHeld,
+      mu_pa_s: num($("mu").value),
+      gamma: num($("gamma").value),
+      r_specific_j_kg_k: num($("Rspec").value),
+      beta1: num($("beta1").value),
+      beta2: num($("beta2").value),
+      mdot_engine_kg_s: num($("mdot_tca").value),
+      mdot_gg_kg_s: num($("mdot_gg").value),
+      OF: num($("OF").value),
+      uFromRpm: uFromRpm,
+      t_end_s: solveTEnd,
+      n_around: num($("n_around").value),
+      n_radial: num($("n_radial").value),
+      n_inlet: num($("n_inlet").value),
+      n_outlet: num($("n_outlet").value),
+      n_cyclic: num($("n_cyclic").value),
+      x_up_c: num($("x_up_c").value),
+      x_dn_c: num($("x_dn_c").value),
+      stretch: num($("stretch").value),
+      hu_mm: num($("hu_mm").value),
+      hl_mm: num($("hl_mm").value),
+      le_mm: num($("le_mm").value),
+      te_mm: num($("te_mm").value),
+      lin_mm: num($("lin_mm").value),
+      lout_mm: num($("lout_mm").value),
+      t_mm: num($("t_mm").value),
+      r_tr_mm: num($("r_tr_mm").value),
+      r_main_mm: num($("r_main_mm").value),
+      psi_tr_deg: num($("psi_tr_deg").value),
+    };
+    if (uFromRpm) {
+      k.rpm = num($("rpm").value);
+    } else {
+      k.U = num($("U").value);
+    }
+    k.rpm_ui = num($("rpm").value);
+    k.U_ui = num($("U").value);
+    return k;
+  }
+
+  function snapshotOf() {
+    try { return knobs(); } catch (_) { return null; }
+  }
+  function sameSnap(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  function pushUndo(snap) {
+    if (!snap) return;
+    const top = undoStack.length ? undoStack[undoStack.length - 1] : null;
+    if (top && sameSnap(top, snap)) return;
+    undoStack.push(JSON.parse(JSON.stringify(snap)));
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+    updateUndoBtn();
+  }
+  function updateUndoBtn() {
+    const b = $("btn-undo");
+    b.disabled = inFlight || undoStack.length === 0;
+  }
+  function applyKnobs(k) {
+    if (!k) return;
+    if (k.packing_driver) packingDriver = k.packing_driver;
+    uFromRpm = k.uFromRpm !== false && k.rpm != null;
+    const pairs = ["hu_mm","hl_mm","le_mm","te_mm","lin_mm","lout_mm","t_mm","r_tr_mm","r_main_mm","psi_tr_deg","s_mm","sigma","c","r","rpm","U","U_inlet","W1","p1","T1","rho1","mu","gamma","Rspec","beta1","beta2","mdot_tca","mdot_gg","OF","n_around","n_radial","n_inlet","n_outlet","n_cyclic","x_up_c","x_dn_c","stretch"];
+    pairs.forEach((id) => {
+      if (id === "mdot_tca" && k.mdot_engine_kg_s != null) setPair(id, k.mdot_engine_kg_s);
+      else if (id === "mdot_gg" && k.mdot_gg_kg_s != null) setPair(id, k.mdot_gg_kg_s);
+      else if (id === "rpm" && (k.rpm_ui != null || k.rpm != null)) setPair(id, k.rpm_ui != null ? k.rpm_ui : k.rpm);
+      else if (id === "U" && (k.U_ui != null || k.U != null)) setPair(id, k.U_ui != null ? k.U_ui : k.U);
+      else if (id === "U_inlet" && (k.U_ui != null || k.U != null)) setPair(id, k.U_ui != null ? k.U_ui : k.U);
+      else if (id === "rho1" && k.rho1_kg_m3 != null) setPair(id, k.rho1_kg_m3);
+      else if (id === "mu" && k.mu_pa_s != null) setPair(id, k.mu_pa_s);
+      else if (id === "Rspec" && k.r_specific_j_kg_k != null) setPair(id, k.r_specific_j_kg_k);
+      else if (k[id] != null) setPair(id, k[id]);
+    });
+    paintW1();
+    paintEos();
+  }
+  function doUndo() {
+    if (!undoStack.length || inFlight) return;
+    const prev = undoStack.pop();
+    applyKnobs(prev);
+    committed = snapshotOf();
+    updateUndoBtn();
+    refreshOutline();
+  }
+
+  function fmtTri(v, digits) {
+    if (v == null || !Number.isFinite(Number(v))) return "—";
+    return Number(v).toPrecision(digits || 4);
+  }
+
+  function fmtNtrsVal(v) {
+    if (v == null || v === "") return "—";
+    if (typeof v === "boolean") return v ? "true" : "false";
+    const n = Number(v);
+    if (Number.isFinite(n)) return n.toPrecision(4);
+    return String(v);
+  }
+  function setNtrs(rows) {
+    const body = $("ntrs_body");
+    if (!body) return;
+    if (rows) lastNtrs = rows;
+    const list = rows || lastNtrs;
+    body.innerHTML = "";
+    const banner = $("ntrs_banner");
+    if (!list || !list.length) {
+      if (banner) banner.textContent = "SCOPING / PREDICTED — literature, not a signed FIRMA spec. Empty until first outline.";
+      return;
+    }
+    if (banner) banner.textContent = "SCOPING / PREDICTED — literature, not a signed FIRMA spec. Not FIELD_CFD.";
+    list.forEach((f) => {
+      const tr = document.createElement("tr");
+      const st = f.status || "INFO";
+      const badgeCls = st === "N/A" ? "st-NA" : ("st-" + st);
+      const pct = (f.pct_vs_bound == null || !Number.isFinite(Number(f.pct_vs_bound)))
+        ? "—"
+        : (Number(f.pct_vs_bound).toFixed(1) + "%");
+      const report = f.report || "";
+      const td0 = document.createElement("td");
+      const sp = document.createElement("span");
+      sp.className = "badge " + badgeCls;
+      sp.textContent = st;
+      td0.appendChild(sp);
+      const td1 = document.createElement("td");
+      td1.textContent = f.title || f.id || "";
+      const td2 = document.createElement("td");
+      td2.textContent = fmtNtrsVal(f.value);
+      const td3 = document.createElement("td");
+      td3.textContent = fmtNtrsVal(f.bound);
+      const td4 = document.createElement("td");
+      td4.textContent = pct;
+      const td5 = document.createElement("td");
+      if (f.url && f.ntrs_id) {
+        const a = document.createElement("a");
+        a.href = f.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = f.ntrs_id;
+        td5.appendChild(a);
+        td5.appendChild(document.createTextNode(" " + report));
+      } else {
+        td5.textContent = report || "—";
+      }
+      tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2);
+      tr.appendChild(td3); tr.appendChild(td4); tr.appendChild(td5);
+      body.appendChild(tr);
+    });
+    stampNtrsKnobs(list);
+  }
+  function ntrsLink(id) {
+    return '<a href="https://ntrs.nasa.gov/citations/' + id + '">' + id + '</a>';
+  }
+  function stampNtrsKnobs(list) {
+    const byId = {};
+    (list || []).forEach((f) => { if (f && f.id) byId[f.id] = f; });
+    function paint(ids, finding, html) {
+      const st = finding && finding.status;
+      const extra = (st && st !== "INFO" && st !== "N/A") ? (" · " + st) : "";
+      ids.forEach((id) => {
+        const el = $(id);
+        if (!el) return;
+        el.innerHTML = html + extra;
+        const knob = el.closest(".knob");
+        if (!knob) return;
+        knob.classList.remove("st-HIGH", "st-LOW", "st-NOMINAL");
+        if (st === "HIGH" || st === "LOW" || st === "NOMINAL") knob.classList.add("st-" + st);
+      });
+    }
+    paint(
+      ["ntrs_stamp_beta1", "ntrs_stamp_beta2"],
+      byId.rotor_turning,
+      "NOMINAL vs NTRS " + ntrsLink("19940018586") + " = 140 deg · context 160 deg NTRS " + ntrsLink("19920066198") + " · |β1−β2|"
+    );
+    paint(
+      ["ntrs_stamp_sigma"],
+      byId.zweifel_rotor,
+      "NOMINAL vs NTRS " + ntrsLink("19740025363") + " = 0.8 (NASA-SP-290) · Zw"
+    );
+    paint(
+      ["ntrs_stamp_w1", "ntrs_stamp_w1_inlet"],
+      byId.mw1_goldman_range,
+      "TN D-4422 " + ntrsLink("19680010807") + " sweep 1.5–5.0 · 1.0–1.5 method valid off the 1968 chart INFO · Mw1"
+    );
+  }
+
+
+  function setLoss(j) {
+    if (!j) return;
+    const ls = j.loss_scoping || {};
+    const ofSt = j.of_station || {};
+    const yp = (ls.profile && ls.profile.Yp != null) ? ls.profile.Yp : null;
+    $("loss_euler").textContent = (j.euler_work_j_kg != null) ? fmtTri(j.euler_work_j_kg) : "—";
+    $("loss_power").textContent = (j.power_w != null) ? fmtTri(j.power_w) : "—";
+    let ofP = (j.of_power_w != null) ? Number(j.of_power_w) : null;
+    const uLive = (j.u_m_s != null) ? j.u_m_s : (lastOutlineTriangles && lastOutlineTriangles.u_m_s);
+    if ((ofP == null || !Number.isFinite(ofP)) && j.Ft_N != null && uLive != null) ofP = Number(j.Ft_N) * Number(uLive);
+    $("loss_of_power").textContent = (ofP != null && Number.isFinite(ofP)) ? fmtTri(ofP) : "—";
+    $("loss_yp").textContent = (yp != null) ? fmtTri(yp) : "—";
+    $("loss_mw").textContent = (j.Mw1 != null) ? fmtTri(j.Mw1) : "—";
+    const mwOf = (j.Mw1_OF != null) ? j.Mw1_OF : ofSt.Mw1_OF;
+    const elMwOf = $("loss_mw_of");
+    if (elMwOf) elMwOf.textContent = (mwOf != null) ? fmtTri(mwOf) : "—";
+    const elIn = $("loss_w_in");
+    if (elIn) elIn.textContent = (ofSt.w_inlet_m_s != null) ? fmtTri(ofSt.w_inlet_m_s) : "—";
+    const elOut = $("loss_w_out");
+    if (elOut) elOut.textContent = (ofSt.w_outlet_m_s != null) ? fmtTri(ofSt.w_outlet_m_s) : "—";
+    const elR = $("loss_w_ratio");
+    if (elR) elR.textContent = (ofSt.w2_over_w1 != null) ? fmtTri(ofSt.w2_over_w1) : "—";
+    lastEuler = (j.euler_work_j_kg != null) ? Number(j.euler_work_j_kg) : lastEuler;
+    lastMw1 = (j.Mw1 != null) ? Number(j.Mw1) : lastMw1;
+    if (ofSt && Object.keys(ofSt).length) lastOfStation = ofSt;
+    $("loss_shock").textContent = (ls.shock && ls.shock.status) ? ls.shock.status : "not wired";
+    $("loss_tip").textContent = (ls.tip_secondary && ls.tip_secondary.status) ? ls.tip_secondary.status : "not wired";
+    const banner = $("loss_banner");
+    if (banner) {
+      banner.textContent = (mwOf != null || j.Ft_N != null)
+        ? "SCOPING AM Yp PREDICTED book. OF |W|/Mw1/Ft·U from this-case latest time-dir. KO shock/tip not wired. Not stage η. η from CFD forbidden. PREDICTED until STAND."
+        : "SCOPING / PREDICTED loss stack — Ainley–Mathieson profile Yp. Kacker–Okapuu shock/tip not wired. Not stage η. Not from OpenFOAM. Not STAND-true.";
+    }
+  }
+  function setTriangles(tri) {
+    if (tri) lastOutlineTriangles = tri;
+    const t = tri || lastOutlineTriangles;
+    $("tri_c1").textContent = t ? fmtTri(t.c1_m_s) : "—";
+    $("tri_c2").textContent = t ? fmtTri(t.c2_m_s) : "—";
+    $("tri_w1").textContent = t ? fmtTri(t.w1_m_s) : "—";
+    $("tri_w2").textContent = t ? fmtTri(t.w2_m_s) : "—";
+    $("tri_a1").textContent = t ? fmtTri(t.alpha1_abs_deg) : "—";
+    $("tri_a2").textContent = t ? fmtTri(t.alpha2_abs_deg) : "—";
+    $("tri_b1").textContent = t ? fmtTri(t.beta1_flow_deg) : "—";
+    $("tri_b2").textContent = t ? fmtTri(t.beta2_flow_deg) : "—";
+    $("tri_u").textContent = t ? fmtTri(t.u_m_s) : "—";
+    const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    set("tri_mw1", t ? fmtTri(t.Mw1) : "—");
+    set("tri_max1", t ? fmtTri(t.Max1) : "—");
+    set("tri_rec", t ? fmtTri(t.Re_c) : "—");
+    set("tri_psi", t ? fmtTri(t.psi) : "—");
+    set("tri_uc1", t ? fmtTri(t.U_over_C1) : "—");
+    set("tri_ui", t ? (t.unique_incidence_active ? "ACTIVE" : "off") : "—");
+    set("tri_mdot_open", t ? fmtTri(t.mdot_open_kg_s) : "—");
+    set("tri_block", t && t.blockage_implied != null ? fmtTri(t.blockage_implied) : "—");
+    if (t && t.beta1_flow_deg != null && $("beta1") && $("beta1").disabled) setPair("beta1", t.beta1_flow_deg);
+  }
+
+  function setAuth(a, extra) {
+    extra = extra || {};
+    if (a === "FIELD_CFD" && extra.mesh_ok === false) a = "SCOPING";
+    const el = $("auth");
+    el.textContent = a || "SCOPING";
+    el.className = "badge " + (a === "FIELD_CFD" ? "field" : "scoping");
+    const pa = $("plot_auth");
+    if (pa) {
+      pa.textContent = a || "SCOPING";
+      pa.className = "badge " + (a === "FIELD_CFD" ? "field" : "scoping");
+    }
+    const ta = $("tri_auth");
+    if (ta) {
+      ta.textContent = "SCOPING";
+      ta.className = "badge scoping";
+    }
+  }
+  function setFieldPlots(show) {
+    const wrap = $("field_plots");
+    if (!wrap) return;
+    wrap.classList.toggle("hid", !show);
+    const ids = ["contour_stream", "contour_M", "contour_shock", "contour_U", "force_history", "contour_p", "wall_cp_blade0"];
+    if (show) {
+      const t = Date.now();
+      ids.forEach((id) => { $(id).src = "/plot/" + id + ".png?t=" + t; });
+    } else {
+      ids.forEach((id) => { $(id).removeAttribute("src"); });
+    }
+  }
+  function setForces(j) {
+    $("ft").textContent = (j.Ft_N == null) ? "—" : Number(j.Ft_N).toPrecision(4);
+    $("fd").textContent = (j.Fd_N == null) ? "—" : Number(j.Fd_N).toPrecision(4);
+    $("ok").textContent = (j.success == null) ? "—" : String(!!j.success);
+    lastFt = (j.Ft_N == null) ? null : Number(j.Ft_N);
+    lastFd = (j.Fd_N == null) ? null : Number(j.Fd_N);
+    lastAuthority = j.authority || "SCOPING";
+    if (j.flags) lastFlags = j.flags;
+    if (j.mesh_ok != null) lastFlags = Object.assign({}, lastFlags || {}, {mesh_ok: j.mesh_ok});
+    setAuth(j.authority || "SCOPING", j);
+  }
+  function setErr(m) { $("err").textContent = m || ""; }
+  function setGeomBanner(j) {
+    const el = $("geom_banner");
+    if (!el) return;
+    const w = (j && j.geom_warnings) ? j.geom_warnings.filter(Boolean) : [];
+    if (!w.length) { el.classList.remove("show"); el.textContent = ""; return; }
+    el.classList.add("show");
+    el.textContent = w.join(" · ");
+  }
+  function applyGeomBounds(b) {
+    if (!b) return;
+    Object.keys(b).forEach((id) => {
+      const spec = b[id];
+      const n = $(id);
+      const s = document.querySelector('input[type=range][data-sync="' + id + '"]');
+      if (!spec) return;
+      if (spec.min != null) {
+        if (n) n.min = spec.min;
+        if (s) s.min = spec.min;
+      }
+      if (spec.max != null) {
+        if (n) n.max = spec.max;
+        if (s) s.max = spec.max;
+      }
+      if (n && spec.max != null && num(n.value) > Number(spec.max)) {
+        n.value = spec.max;
+        if (s) s.value = spec.max;
+      }
+      if (n && spec.min != null && num(n.value) < Number(spec.min)) {
+        n.value = spec.min;
+        if (s) s.value = spec.min;
+      }
+    });
+  }
+  function log(obj) { $("log").textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); }
+
+  async function parseRes(r) {
+    const ct = r.headers.get("content-type") || "";
+    if (ct.indexOf("json") >= 0) return r.json();
+    const t = await r.text();
+    return { ok: r.ok, error: t.slice(0, 400) };
+  }
+
+  function fmtElapsed(s) {
+    s = Math.max(0, Math.floor(Number(s) || 0));
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    if (m >= 60) {
+      const h = Math.floor(m / 60);
+      return h + ":" + String(m % 60).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
+    }
+    return m + ":" + String(sec).padStart(2, "0");
+  }
+  function setBusy(on) {
+    inFlight = !!on;
+    $("btn-mesh").disabled = inFlight;
+    $("btn-solve").disabled = inFlight;
+    const bs = $("btn-save-test");
+    if (bs) bs.disabled = inFlight || !saveArmed;
+    updateUndoBtn();
+  }
+  let ljMin = false;
+  function paintLjMin() {
+    const el = $("long_job_panel");
+    if (!el) return;
+    el.classList.toggle("lj-min", ljMin);
+    const b = $("btn-lj-min");
+    if (b) b.textContent = ljMin ? "Max" : "Min";
+  }
+  function showPanel(phase) {
+    const el = $("long_job_panel");
+    const running = (phase === "meshing" || phase === "solving");
+    let cls = "lj-active";
+    if (running) cls += " lj-running";
+    if (phase === "done-ok") cls += " lj-done-ok";
+    if (phase === "done-fail") cls += " lj-done-fail";
+    if (phase === "error") cls += " lj-error";
+    if (ljMin) cls += " lj-min";
+    el.className = cls;
+    $("long_job_phase").textContent = phase || "idle";
+    paintLjMin();
+    if (running) setBusy(true);
+  }
+  function applyJobStatus(j) {
+    if (!j) return;
+    const phase = j.phase || "idle";
+    const running = (phase === "meshing" || phase === "solving");
+    const hasCfd = (j.sim_time_s != null) || (j.n_time_dirs != null && j.n_time_dirs > 0);
+    if (running || phase === "error" || phase === "done-ok" || phase === "done-fail" || hasCfd) {
+      showPanel(phase === "idle" && hasCfd ? "done-ok" : phase);
+    }
+    $("long_job_phase").textContent = (phase === "idle" && hasCfd) ? "last CFD" : phase;
+    $("long_job_elapsed").textContent = fmtElapsed(j.elapsed_s);
+    $("long_job_heartbeat").textContent = j.heartbeat
+      || (running ? ("elapsed " + fmtElapsed(j.elapsed_s) + " · still running · not stuck") : phase);
+    const det = $("long_job_detail");
+    const bar = $("long_job_bar");
+    if (j.sim_time_s != null && j.end_time_s != null) {
+      det.textContent = "CFD t=" + Number(j.sim_time_s).toPrecision(4)
+        + " / " + Number(j.end_time_s).toPrecision(4) + " s"
+        + (j.n_time_dirs != null ? (" · " + j.n_time_dirs + " dumps") : "");
+      const frac = j.end_time_s > 0 ? (j.sim_time_s / j.end_time_s) : 0;
+      bar.style.width = Math.min(99, Math.max(2, 100 * frac)) + "%";
+      bar.className = running ? "lj-cfd" : "";
+    } else {
+      det.textContent = (j.n_time_dirs != null) ? (j.n_time_dirs + " dumps") : "";
+      bar.style.width = "100%";
+      bar.className = "";
+    }
+    setAuth(j.authority || "SCOPING", j);
+    setForces(j);
+    const ntrsJ = j.ntrs_checks || (j.result && j.result.ntrs_checks);
+    if (ntrsJ) setNtrs(ntrsJ);
+    setLoss(j.result || j);
+    if (j.error) setErr(j.error);
+    setBusy(running);
+    return running;
+  }
+  function pollStatus() {
+    if (poll) return;
+    poll = setInterval(async () => {
+      try {
+        const j = await (await fetch("/status")).json();
+        const running = applyJobStatus(j);
+        if (!running) {
+          clearInterval(poll);
+          poll = null;
+          $("outline").src = "/outline.png?t=" + Date.now();
+          $("triangles").src = "/plot/triangles.png?t=" + Date.now();
+          const meshOnly = (j.kind === "mesh" || j.kind === "skip_solve" || j.cfd_ran === false);
+          if (meshOnly) {
+            setForces(Object.assign({}, j, {Ft_N: null, Fd_N: null}));
+            setFieldPlots(false);
+            if (j.flags) lastFlags = j.flags;
+            armSave();
+          } else {
+            fetch("/result").then(r => r.json()).then((res) => { setForces(res); if (res.ntrs_checks) setNtrs(res.ntrs_checks); setLoss(res); if (res.flags) lastFlags = res.flags; armSave(); }).catch(() => {});
+            setFieldPlots(true);
+            armSave();
+          }
+          if (j && j.error) setErr(j.error);
+          const ntrs = j.ntrs_checks || (j.result && j.result.ntrs_checks);
+          if (ntrs) setNtrs(ntrs);
+          log(j);
+        }
+      } catch (_) {}
+    }, 1000);
+  }
+
+  async function refreshOutline() {
+    if (inFlight) return;
+    const id = ++outlineSeq;
+    setErr("");
+    let k;
+    try { k = knobs(); }
+    catch (e) { setErr(String(e.message || e)); return; }
+    try {
+      const r = await fetch("/outline", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(k) });
+      const j = await parseRes(r);
+      if (id !== outlineSeq) return;
+      setGeomBanner(j);
+      applyGeomBounds(j.geom_bounds);
+      if (j.pitch_m) { setPair("s_mm", (Number(j.pitch_m) * 1e3).toFixed(2)); }
+      if (j.solidity) { setPair("sigma", Number(j.solidity).toFixed(3)); }
+      paintPack();
+      if (!j.ok) { setErr(j.error || "outline failed"); log(j); return; }
+      if (j.noop) return;
+      $("outline").src = "/outline.png?t=" + Date.now();
+      $("triangles").src = "/plot/triangles.png?t=" + Date.now();
+      setTriangles(j.triangles);
+      setNtrs(j.ntrs_checks);
+      setLoss(j);
+      setAuth("SCOPING", j);
+      setFieldPlots(false);
+      log(j);
+    } catch (e) {
+      if (id !== outlineSeq) return;
+      setErr("outline: " + (e.message || e));
+    }
+  }
+  function debounceOutline() {
+    clearTimeout(timer);
+    timer = setTimeout(refreshOutline, 280);
+  }
+
+  async function post(path) {
+    let k;
+    try { k = knobs(); }
+    catch (e) { setErr(String(e.message || e)); return; }
+    setErr("");
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(k) });
+    const j = await parseRes(r);
+    log(j);
+    if (j.error) setErr(j.error);
+    if (j.png) $("outline").src = "/outline.png?t=" + Date.now();
+    $("triangles").src = "/plot/triangles.png?t=" + Date.now();
+    if (j.triangles) setTriangles(j.triangles);
+    if (j.ntrs_checks) setNtrs(j.ntrs_checks);
+    setLoss(j);
+    setForces(j);
+    setAuth(j.authority || "SCOPING", j);
+    if (j && (j.started || j.phase === "meshing" || j.phase === "solving" || j.ok || j.flags)) {
+      if (j.flags) lastFlags = j.flags;
+    }
+    return j;
+  }
+
+  function syncUFromRpm() {
+    if (!uFromRpm) return;
+    const rpm = num($("rpm").value);
+    const r = num($("r").value);
+    if (rpm && r) {
+      const u = (rpm * 2 * Math.PI / 60 * r).toFixed(1);
+      setPair("U", u);
+      setPair("U_inlet", u);
+    }
+  }
+  function paintW1() {
+    const el = $("w1_readout");
+    if (el) el.textContent = $("W1") ? $("W1").value : "—";
+    const mw = $("mw1_derived");
+    if (mw) {
+      const W = num($("W1").value);
+      const g = num($("gamma").value);
+      const R = num($("Rspec").value);
+      const T = num($("T1").value);
+      if (W && g && R && T) {
+        const a = Math.sqrt(g * R * T);
+        mw.textContent = "Mw1 = W1/a = " + (W / a).toFixed(3) + " (derived, display-only)";
+      } else {
+        mw.textContent = "Mw1 = W1/a (derived, display-only) —";
+      }
+    }
+  }
+  function eosRho() {
+    const p = num($("p1").value);
+    const T = num($("T1").value);
+    const R = num($("Rspec").value);
+    if (!(p && T && R)) return null;
+    return p / (R * T);
+  }
+  function followRho() {
+    if (rhoHeld) { paintEos(); return; }
+    const r = eosRho();
+    if (r != null) setPair("rho1", r.toFixed(4));
+    paintEos();
+  }
+  function paintEos() {
+    const el = $("eos_resid");
+    const mode = $("rho_mode");
+    if (mode) mode.textContent = rhoHeld ? "holding ρ" : "follows p/(R T)";
+    if (!el) return;
+    const p = num($("p1").value);
+    const T = num($("T1").value);
+    const R = num($("Rspec").value);
+    const rho = num($("rho1").value);
+    if (!(p && T && R) || rho == null) { el.textContent = "—"; return; }
+    const pct = 100 * Math.abs(p - rho * R * T) / Math.abs(p);
+    el.textContent = pct.toFixed(3) + "%";
+  }
+  function openInlet() { $("inlet_modal").classList.add("open"); paintEos(); }
+  function closeInlet() { $("inlet_modal").classList.remove("open"); }
+  function openMesh() { $("mesh_modal").classList.add("open"); }
+  function closeMesh() { $("mesh_modal").classList.remove("open"); }
+
+  function ymd() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return "" + y + m + day;
+  }
+  function armSave() {
+    saveArmed = true;
+    const b = $("btn-save-test");
+    if (b) b.disabled = inFlight;
+  }
+  function renderSaved() {
+    const box = $("saved_tests");
+    if (!box) return;
+    box.innerHTML = "";
+    savedTests.forEach((rec, i) => {
+      const lab = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = rec._sel !== false;
+      cb.addEventListener("change", () => { rec._sel = cb.checked; });
+      const sp = document.createElement("span");
+      const ft = rec.Ft_N == null ? "—" : Number(rec.Ft_N).toPrecision(4);
+      sp.textContent = (rec.timestamp || "") + "  Ft=" + ft + " N  PREDICTED  not a design load";
+      lab.appendChild(cb);
+      lab.appendChild(sp);
+      box.appendChild(lab);
+    });
+    const dl = $("btn-dl-tests");
+    if (dl) dl.disabled = savedTests.length === 0;
+  }
+  function collectRecord() {
+    let k = null;
+    try { k = knobs(); } catch (_) { k = snapshotOf(); }
+    const auth = lastAuthority || ($("auth") && $("auth").textContent) || "SCOPING";
+    const field = auth === "FIELD_CFD";
+    return {
+      timestamp: new Date().toISOString(),
+      knobs: k,
+      Ft_N: field ? lastFt : null,
+      Fd_N: field ? lastFd : null,
+      euler_work_j_kg: lastEuler,
+      Mw1: lastMw1,
+      of_station: lastOfStation,
+      predicted: true,
+      authority: auth,
+      mesh_ok: lastFlags ? lastFlags.mesh_ok : null,
+      flags: lastFlags,
+      note: "PREDICTED. Saved Ft is not a design load.",
+    };
+  }
+  function downloadBlob(filename, mime, text) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], {type: mime}));
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  function scalarCsv(rows) {
+    const cols = ["timestamp","authority","predicted","mesh_ok","W1","p1","T1","rho1_kg_m3","gamma","r_specific_j_kg_k","beta1","U","mdot_engine_kg_s","mdot_gg_kg_s","OF","Ft_N","Fd_N","euler_work_j_kg","Mw1"];
+    const lines = [cols.join(",")];
+    rows.forEach((r) => {
+      const k = r.knobs || {};
+      const vals = [
+        r.timestamp, r.authority, r.predicted, r.mesh_ok,
+        k.W1, k.p1, k.T1, k.rho1_kg_m3, k.gamma, k.r_specific_j_kg_k, k.beta1,
+        k.U != null ? k.U : k.U_ui, k.mdot_engine_kg_s, k.mdot_gg_kg_s, k.OF,
+        r.Ft_N, r.Fd_N, r.euler_work_j_kg, r.Mw1
+      ];
+      lines.push(vals.map((v) => (v == null ? "" : String(v))).join(","));
+    });
+    return lines.join("\n") + "\n";
+  }
+
+  function bindPair(id, onLive) {
+    const n = $(id);
+    const s = document.querySelector('input[type=range][data-sync="' + id + '"]');
+    if (!n) return;
+    if (s) {
+      s.addEventListener("pointerdown", () => { pushUndo(snapshotOf()); });
+      s.addEventListener("input", () => {
+        n.value = s.value;
+        if (onLive) onLive("slider");
+        debounceOutline();
+      });
+      s.addEventListener("change", () => { committed = snapshotOf(); });
+    }
+    n.addEventListener("change", () => {
+      pushUndo(committed);
+      if (s) s.value = n.value;
+      if (onLive) onLive("number");
+      committed = snapshotOf();
+      debounceOutline();
+    });
+    n.addEventListener("input", () => {
+      if (s) s.value = n.value;
+      if (onLive) onLive("number-input");
+      debounceOutline();
+    });
+  }
+
+  function paintPack() {
+    const s = num($("s_mm").value);
+    const c = num($("c").value);
+    const r = num($("r").value);
+    const el = $("z_readout");
+    if (!el || !(s > 0)) return;
+    const z = (r > 0) ? (2 * Math.PI * r / (s * 1e-3)) : 0;
+    const sig = (c > 0) ? (c / (s * 1e-3)) : 0;
+    el.textContent = "Z ≈ " + z.toFixed(1) + " = 2π r / s (derived, unsigned). σ = c/s = " + sig.toFixed(3) + ".";
+  }
+  bindPair("s_mm", () => {
+    packingDriver = "pitch";
+    const s = num($("s_mm").value);
+    const c = num($("c").value);
+    if (s > 0 && c > 0) setPair("sigma", (c / (s * 1e-3)).toFixed(3));
+    paintPack();
+  });
+  bindPair("sigma", () => {
+    packingDriver = "sigma";
+    const sig = num($("sigma").value);
+    const c = num($("c").value);
+    if (sig > 0 && c > 0) setPair("s_mm", (c / sig * 1e3).toFixed(2));
+    paintPack();
+  });
+  bindPair("rpm", () => { uFromRpm = true; syncUFromRpm(); });
+  bindPair("U", (src) => { uFromRpm = false; setPair("U_inlet", $("U").value); });
+  bindPair("U_inlet", (src) => { uFromRpm = false; setPair("U", $("U_inlet").value); });
+  bindPair("r", () => { syncUFromRpm(); });
+  ["hu_mm","hl_mm","le_mm","te_mm","lin_mm","lout_mm","t_mm","r_tr_mm","r_main_mm","psi_tr_deg","beta1","beta2","c","W1","mu","gamma","mdot_tca","mdot_gg","OF","n_around","n_radial","n_inlet","n_outlet","n_cyclic","x_up_c","x_dn_c","stretch"].forEach((id) => bindPair(id, () => {
+    paintW1();
+    paintEos();
+  }));
+  ["p1","T1","Rspec"].forEach((id) => bindPair(id, () => { followRho(); paintW1(); }));
+  bindPair("rho1", () => { rhoHeld = true; paintEos(); });
+  $("btn-undo").addEventListener("click", doUndo);
+  function openInputsPopup() {
+    const w = window.open("/filters.html", "ic35_inputs", "popup=yes,width=920,height=780");
+    if (!w) { alert("Popup blocked — allow popups for Inputs split-screen."); }
+  }
+  async function refreshProfileStrip() {
+    try {
+      const r = await fetch("/api/profile");
+      if (!r.ok) return;
+      const j = await r.json();
+      const p = j.profile || {};
+      const v = p.values || {};
+      const bits = [
+        "dm=" + (v.dm_mm ?? "—") + " mm",
+        "c=" + (v.chord_mm ?? "—") + " mm",
+        "Z=" + (v.Z ?? "—"),
+        "β1=" + (v.beta1_deg ?? "—") + "°",
+        "W1=" + (v.W1_m_s ?? "—") + " m/s",
+      ];
+      $("profile_strip").textContent = "Central profile (PREDICTED/SCOPING): " + bits.join(" · ");
+    } catch (_) {}
+  }
+  async function applyProfileKnobs(mapped) {
+    if (!mapped) return;
+    applyKnobs(mapped);
+    if (typeof debounceOutline === "function") debounceOutline();
+    else if (typeof refreshOutline === "function") refreshOutline();
+    refreshProfileStrip();
+  }
+  $("btn-inputs").addEventListener("click", openInputsPopup);
+  $("btn-update-profile").addEventListener("click", async () => {
+    try {
+      const r = await fetch("/api/profile");
+      const j = await r.json();
+      const ur = await fetch("/api/profile/update", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ values: (j.profile||{}).values || {} }) });
+      const uj = await ur.json();
+      await applyProfileKnobs(uj.knobs);
+    } catch (e) { console.warn(e); }
+  });
+  window.addEventListener("message", async (ev) => {
+    if (!ev.data || ev.data.type !== "ic35_profile_updated") return;
+    try {
+      const ur = await fetch("/api/profile/update", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ values: (ev.data.profile && ev.data.profile.values) || {} }) });
+      const uj = await ur.json();
+      await applyProfileKnobs(uj.knobs);
+    } catch (e) { console.warn(e); }
+  });
+  refreshProfileStrip();
+  $("btn-inlet").addEventListener("click", openInlet);
+  const br = $("btn-rho-follow");
+  if (br) br.addEventListener("click", () => { rhoHeld = false; followRho(); });
+  followRho();
+  $("btn-inlet-close").addEventListener("click", closeInlet);
+  $("inlet_modal").addEventListener("click", (ev) => { if (ev.target === $("inlet_modal")) closeInlet(); });
+  $("btn-mesh-counts").addEventListener("click", openMesh);
+  $("btn-mesh-close").addEventListener("click", closeMesh);
+  $("mesh_modal").addEventListener("click", (ev) => { if (ev.target === $("mesh_modal")) closeMesh(); });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && $("inlet_modal").classList.contains("open")) closeInlet();
+    if (ev.key === "Escape" && $("mesh_modal").classList.contains("open")) closeMesh();
+  });
+  $("btn-save-test").addEventListener("click", () => {
+    if (!saveArmed || inFlight) return;
+    const rec = collectRecord();
+    rec._sel = true;
+    savedTests.push(rec);
+    renderSaved();
+  });
+  $("btn-dl-tests").addEventListener("click", () => {
+    const sel = savedTests.filter((r) => r._sel !== false);
+    if (!sel.length) return;
+    const stamp = ymd();
+    const payload = sel.map((r) => {
+      const o = Object.assign({}, r);
+      delete o._sel;
+      return o;
+    });
+    downloadBlob("impulsecalc3_tests_" + stamp + ".json", "application/json", JSON.stringify(payload, null, 2));
+    downloadBlob("impulsecalc3_tests_" + stamp + ".csv", "text/csv", scalarCsv(payload));
+  });
+  document.addEventListener("keydown", (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z") && !ev.shiftKey) {
+      const tag = (ev.target && ev.target.tagName) || "";
+      if (tag === "TEXTAREA") return;
+      ev.preventDefault();
+      doUndo();
+    }
+  });
+
+  $("btn-lj-min").addEventListener("click", () => { ljMin = !ljMin; paintLjMin(); });
+  $("btn-mesh").addEventListener("click", async () => {
+    if (inFlight) return;
+    showPanel("meshing");
+    setBusy(true);
+    setErr("");
+    setFieldPlots(false);
+    setForces({Ft_N: null, Fd_N: null, success: false, authority: "SCOPING"});
+    try {
+      const j = await post("/mesh");
+      if (j && j.error && !j.started) {
+        showPanel(j.phase || "error");
+        setErr(j.error);
+        setBusy(false);
+        return;
+      }
+      if (j && (j.started || j.phase === "meshing")) pollStatus();
+    } catch (e) {
+      setErr(String(e.message || e));
+      showPanel("error");
+      $("long_job_heartbeat").textContent = String(e.message || e);
+      setBusy(false);
+    }
+  });
+  function hideSolveTimes() { $("solve_times").classList.remove("open"); }
+  function showSolveTimes() { $("solve_times").classList.add("open"); }
+  async function startSolve() {
+    if (inFlight) return;
+    hideSolveTimes();
+    showPanel("solving");
+    setBusy(true);
+    setErr("");
+    try {
+      const j = await post("/solve");
+      if (j && j.error && !j.started) {
+        showPanel(j.phase || "error");
+        setErr(j.error);
+        $("long_job_heartbeat").textContent = j.error;
+        setBusy(false);
+        return;
+      }
+      if (j && (j.started || j.phase === "solving")) pollStatus();
+    } catch (e) {
+      setErr(String(e.message || e));
+      showPanel("error");
+      $("long_job_heartbeat").textContent = String(e.message || e);
+      setBusy(false);
+    }
+  }
+  $("btn-solve").addEventListener("click", () => { startSolve(); });
+  $("btn-solve").addEventListener("pointerenter", () => {
+    clearTimeout(solveHover);
+    solveHover = setTimeout(showSolveTimes, 1500);
+  });
+  $("solve_wrap").addEventListener("pointerleave", () => {
+    clearTimeout(solveHover);
+    solveHover = setTimeout(hideSolveTimes, 250);
+  });
+  $("solve_times").addEventListener("pointerenter", () => { clearTimeout(solveHover); });
+  $("solve_times").querySelectorAll("button[data-t]").forEach((b) => {
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      solveTEnd = Number(b.getAttribute("data-t"));
+      startSolve();
+    });
+  });
+
+  fetch("/defaults").then(r => r.json()).then((d) => {
+    ["hu_mm","hl_mm","le_mm","te_mm","lin_mm","lout_mm","t_mm","r_tr_mm","r_main_mm","psi_tr_deg","beta1","beta2"].forEach((id) => {
+      if (d[id] == null) return;
+      const n = $(id);
+      const s = document.querySelector('input[type=range][data-sync="'+id+'"]');
+      if (n) n.value = d[id];
+      if (s) s.value = d[id];
+    });
+    if (d.packing) {
+      if (d.packing.s_mm != null) { setPair("s_mm", d.packing.s_mm); packingDriver = "pitch"; }
+      if (d.packing.sigma != null) { setPair("sigma", d.packing.sigma); }
+      if (d.packing.c != null) { setPair("c", d.packing.c); }
+      if (d.packing.r != null) { setPair("r", d.packing.r); }
+    }
+    ["s_mm","sigma"].forEach((id) => { if (d[id] != null) { const n=$(id); const s=document.querySelector('input[type=range][data-sync="'+id+'"]'); if(n) n.value=d[id]; if(s) s.value=d[id]; } });
+    paintPack();
+    $("ofnote").textContent = d.of_present
+      ? "OpenFOAM present — Run mesh / Run solve are background jobs."
+      : "OpenFOAM missing — outline still works (SCOPING). Run solve will not upgrade the label.";
+    showFam();
+    paintW1();
+    paintEos();
+    committed = snapshotOf();
+    updateUndoBtn();
+    refreshOutline();
+    fetch("/status").then(r => r.json()).then((j) => {
+      if (j && (j.phase === "meshing" || j.phase === "solving")) {
+        applyJobStatus(j);
+        pollStatus();
+      }
+    }).catch(() => {});
+  }).catch(() => {
+    showFam();
+    committed = snapshotOf();
+    updateUndoBtn();
+    refreshOutline();
+  });
+})();
+</script>
+</body>
+</html>
