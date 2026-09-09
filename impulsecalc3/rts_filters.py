@@ -64,7 +64,7 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
                 "keys": [
                     {"rts": "cycle.d_m", "id": "dm_mm", "label": "Mean diameter", "sym": "dm", "unit": "mm", "default": 88.9},
                     {"rts": "rotorValues.N", "id": "Z", "label": "Blade count (machine)", "sym": "Z", "unit": "—", "default": 36},
-                    {"rts": "(derived σ)", "id": "solidity", "label": "Solidity", "sym": "σ", "unit": "—", "default": 1.4},
+                    {"rts": "(derived σ=c/s)", "id": "solidity", "label": "Solidity (derived c/s)", "sym": "σ", "unit": "—", "default": 1.4, "derived": True, "readonly": True},
                     {"rts": "cycle.degree_of_admission", "id": "epsilon", "label": "Admission", "sym": "ε", "unit": "—", "default": 1.0},
                 ],
             },

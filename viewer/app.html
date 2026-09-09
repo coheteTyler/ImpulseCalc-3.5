@@ -193,13 +193,18 @@ function knobsFromProfile(v) {
   if (p.dm_mm != null) {
     k.r = num(p.dm_mm, 88.9) * 5e-4;
   }
-  if (p.solidity != null) k.sigma = num(p.solidity, k.sigma);
   if (p.omega_rps != null) {
     k.rpm = num(p.omega_rps, 666.67) * 60;
     k.rpm_ui = k.rpm;
     k.uFromRpm = true;
   }
-  if (k.c > 0 && k.sigma > 0) k.s_mm = (k.c / k.sigma) * 1e3;
+  if (p.dm_mm != null && p.Z != null && num(p.Z, 0) > 0) {
+    const s_m = Math.PI * (num(p.dm_mm, 88.9) * 1e-3) / num(p.Z, 36);
+    k.s_mm = s_m * 1e3;
+    if (k.c > 0) k.sigma = k.c / s_m;
+  } else if (k.c > 0 && k.sigma > 0) {
+    k.s_mm = (k.c / k.sigma) * 1e3;
+  }
   return k;
 }
 

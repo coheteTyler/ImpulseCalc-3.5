@@ -140,6 +140,11 @@ function paint() {
       inp.id = "f_" + k.id;
       inp.step = "any";
       inp.value = VALUES[k.id] ?? k.default ?? "";
+      if (k.readonly || k.derived) {
+        inp.readOnly = true;
+        inp.title = "Derived — edit chord and size drivers, not σ";
+        inp.style.opacity = "0.7";
+      }
       inp.addEventListener("change", () => {
         const n = Number(inp.value);
         if (!Number.isNaN(n)) VALUES[k.id] = n;
@@ -154,6 +159,16 @@ function paint() {
   }
 }
 
+function recomputeDerived() {
+  const c = Number(VALUES.chord_mm);
+  const dm = Number(VALUES.dm_mm);
+  const Z = Number(VALUES.Z);
+  if (Number.isFinite(c) && c > 0 && Number.isFinite(dm) && dm > 0 && Number.isFinite(Z) && Z > 0) {
+    const s_mm = Math.PI * dm / Z;
+    VALUES.solidity = c / s_mm;
+  }
+}
+
 function readValuesFromDom() {
   for (const k of (SCHEMA.keys || [])) {
     const el = document.getElementById("f_" + k.id);
@@ -165,6 +180,7 @@ function readValuesFromDom() {
 
 async function doUpdate() {
   readValuesFromDom();
+  recomputeDerived();
   $("btn-update").disabled = true;
   $("status").textContent = "Writing profile…";
   try {
