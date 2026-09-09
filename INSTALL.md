@@ -1,11 +1,11 @@
-# ImpulseCalc 3.5 — Beginner install guide
+﻿# ImpulseCalc 3.5 â€” Beginner install guide
 
 This guide gets ImpulseCalc 3.5 running on your computer from a clean install.
-No prior OpenFOAM experience required for the **Inputs → Update → profile** path.
+No prior OpenFOAM experience required for the **Inputs â†’ Update â†’ profile** path.
 Solver (mesh + CFD) needs Linux or WSL2.
 
-**What this app is:** a local engineering aid for a 2D impulse-rotor cascade (metal + gas knobs → outline → optional OpenFOAM).
-**What it is not:** a flight certificate. Numbers stay **PREDICTED / SCOPING** until a trusted wall-force plateau and later hardware correlation. This guide never treats CFD efficiency (η) or an unsigned spouting velocity (C₀) as design truth.
+**What this app is:** a local engineering aid for a 2D impulse-rotor cascade (metal + gas knobs â†’ outline â†’ optional OpenFOAM).
+**What it is not:** a flight certificate. Numbers stay **PREDICTED / SCOPING** until a trusted wall-force plateau and later hardware correlation. This guide never treats CFD efficiency (Î·) or an unsigned spouting velocity (Câ‚€) as design truth.
 
 ---
 
@@ -37,11 +37,9 @@ Solver (mesh + CFD) needs Linux or WSL2.
 Open a terminal (PowerShell on Windows, or any shell on Linux/macOS) and run:
 
 ```bash
-git clone https://github.com/<YOUR_GITHUB_USER>/ImpulseCalc-3.5.git
+git clone https://github.com/coheteTyler/ImpulseCalc-3.5.git
 cd ImpulseCalc-3.5
 ```
-
-Replace `<YOUR_GITHUB_USER>` with the account that owns the repo (shown on the GitHub page URL).
 
 If you already have a zip download from GitHub:
 
@@ -116,15 +114,15 @@ You should see the ImpulseCalc page with metal knobs and a cascade outline. Clos
 
 ---
 
-## 5. Use Inputs → Update → profile (new in 3.5)
+## 5. Use Inputs â†’ Update â†’ profile (new in 3.5)
 
 1. On the main page, click **Inputs**.  
    A second window opens (`/filters.html`) so you can put it on another monitor.
 2. Use the left tabs:
-   - **Inlet gas** — uniform post-stator working fluid (no stator metal in this article)
-   - **Size** — diameter, chord, blade count, admission, speed
-   - **Metal** — rotor profile / fillets (ImpulseCalc mm knobs + RTS-style ratios)
-3. Optional: pick a **Smart filter** (for example “Horizontal size”) to show only related knobs.
+   - **Inlet gas** â€” uniform post-stator working fluid (no stator metal in this article)
+   - **Size** â€” diameter, chord, blade count, admission, speed
+   - **Metal** â€” rotor profile / fillets (ImpulseCalc mm knobs + RTS-style ratios)
+3. Optional: pick a **Smart filter** (for example â€œHorizontal sizeâ€) to show only related knobs.
 4. Edit values, then click **Update** at the top.
 5. Back on the main page, the **central profile** strip updates, and the outline refreshes from the mapped knobs.
 
@@ -140,15 +138,15 @@ Only after the UI path works.
 
 1. Install **OpenFOAM ESI 2412** (or use the shop Docker image `opencfd/openfoam-run:2412` if that is how your machine is set up).
 2. Confirm `rhoCentralFoam` is on your PATH inside the same environment that runs the app.
-3. In the UI: set knobs / Update profile → **Run mesh** → wait for a clean mesh.
+3. In the UI: set knobs / Update profile â†’ **Run mesh** â†’ wait for a clean mesh.
 4. Gate: `checkMesh` must report **Failed 0** before you trust a solve.
-5. **Run solve** and pick an `endTime` from the menu (the shortest option is still long enough for flow to cross the passage — not a one-chord smoke test).
-6. Watch the job bar. Shaft power stays **dark** until wall force (`sample_on_wall` / Ft) **plateaus**. Mid-run Mach or |∇p| pictures are transient only.
+5. **Run solve** and pick an `endTime` from the menu (the shortest option is still long enough for flow to cross the passage â€” not a one-chord smoke test).
+6. Watch the job bar. Shaft power stays **dark** until wall force (`sample_on_wall` / Ft) **plateaus**. Mid-run Mach or |âˆ‡p| pictures are transient only.
 
 **Hard rules (do not skip):**
 
 - Do not solve on a mesh that fails `checkMesh`.
-- Do not invent CFD η as a cycle knob.
+- Do not invent CFD Î· as a cycle knob.
 - Do not treat mid-fire screenshots as settled power.
 
 ---
@@ -159,7 +157,7 @@ Only after the UI path works.
 |---------|------------|
 | `python3: command not found` | Install Python 3.10+; on Windows use WSL Ubuntu |
 | `pip` fails on `requirements.txt` | Activate `.venv`, then `python -m pip install -r requirements.txt` |
-| Page won’t load | Confirm the start script is still running; open exactly `http://127.0.0.1:8766/` |
+| Page wonâ€™t load | Confirm the start script is still running; open exactly `http://127.0.0.1:8766/` |
 | Port already in use | Stop the old ImpulseCalc process, or find what holds `8766` and close it |
 | Inputs popup blank / blocked | Allow popups; open `http://127.0.0.1:8766/filters.html` directly |
 | Mesh/solve buttons fail | OpenFOAM not on PATH inside WSL; UI-only still works |
@@ -171,39 +169,39 @@ Only after the UI path works.
 
 ```
 ImpulseCalc-3.5/
-  INSTALL.md              ← you are here
-  README.md               ← deeper shop story / load path
+  INSTALL.md              â† you are here
+  README.md               â† deeper shop story / load path
   requirements.txt
   start.sh / start.ps1
-  impulsecalc3/           ← Python package (geometry, mesh, serve, filters)
-    rts_filters.py        ← RTS-keyed Inlet gas / Size / Metal schema
-    serve.py              ← local UI server + /api/profile/*
+  impulsecalc3/           â† Python package (geometry, mesh, serve, filters)
+    rts_filters.py        â† RTS-keyed Inlet gas / Size / Metal schema
+    serve.py              â† local UI server + /api/profile/*
   viewer/
-    app.html              ← main page
-    filters.html          ← Inputs popup
-  configs/                ← example job JSON
-  output/                 ← local runs (created on your machine)
+    app.html              â† main page
+    filters.html          â† Inputs popup
+  configs/                â† example job JSON
+  output/                 â† local runs (created on your machine)
 ```
 
 ---
 
 ## 9. Safety labels (read once)
 
-- **PREDICTED** — analysis without hardware correlation.
-- **SCOPING** — 0D / outline / early mesh intent, not FIELD_CFD.
-- **FIELD_CFD** — only after a successful solve on that machine and that case, with forces only after wall plateau.
-- **η from CFD** — forbidden as a design / cycle input in this project.
-- **Unsigned C₀** — do not paste guestimate spouting velocities into the guide or the profile as truth.
+- **PREDICTED** â€” analysis without hardware correlation.
+- **SCOPING** â€” 0D / outline / early mesh intent, not FIELD_CFD.
+- **FIELD_CFD** â€” only after a successful solve on that machine and that case, with forces only after wall plateau.
+- **Î· from CFD** â€” forbidden as a design / cycle input in this project.
+- **Unsigned Câ‚€** â€” do not paste guestimate spouting velocities into the guide or the profile as truth.
 
-When in doubt: use Inputs → Update for geometry and gas setup; leave power dark until Foamy / your foam run reports a flat Ft.
+When in doubt: use Inputs â†’ Update for geometry and gas setup; leave power dark until Foamy / your foam run reports a flat Ft.
 
 ---
 
 ## 10. Next steps after install
 
-1. Change **Size → mean diameter** and **chord**, hit **Update**, confirm the outline moves.
-2. Change **Inlet gas → W1 / β1**, Update again.
+1. Change **Size â†’ mean diameter** and **chord**, hit **Update**, confirm the outline moves.
+2. Change **Inlet gas â†’ W1 / Î²1**, Update again.
 3. Only then attempt mesh on WSL/Linux.
 4. Read `README.md` for the longer load-path and known limits.
 
-If install still fails, note your OS (Windows+WSL vs Linux), the exact command you ran, and the full error text — that is enough for someone to debug with you.
+If install still fails, note your OS (Windows+WSL vs Linux), the exact command you ran, and the full error text â€” that is enough for someone to debug with you.
