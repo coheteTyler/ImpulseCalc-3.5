@@ -306,24 +306,15 @@ def center_in_pitch(
     poly: list[tuple[float, float]],
     pitch_m: float,
 ) -> tuple[list[tuple[float, float]], float]:
-    """Translate profile in y so it sits in the middle of one pitch strip.
+    """Translate profile in y so it sits mid-pitch.
 
-    Do not shear the C. Overlap (yspan > s) is a packing fail, not a mill cut.
+    Do not shear the C. yspan > s is legal nesting when solids do not intersect
+    (passage_gap / SS vs PS+s). Mesh uses cassette or H-O-H — do not raise here.
     """
     ys = [p[1] for p in poly]
     y_mid = 0.5 * (min(ys) + max(ys))
     shift = -y_mid
     out = [(p[0], p[1] + shift) for p in poly]
-    ys2 = [p[1] for p in out]
-    half = 0.5 * float(pitch_m)
-    margin = 0.25e-3
-    if max(ys2) >= half - margin or min(ys2) <= -half + margin:
-        yspan = max(ys2) - min(ys2)
-        raise ValueError(
-            f"s={pitch_m*1e3:.2f} mm < metal y-span {yspan*1e3:.2f} mm; "
-            f"min s ≈ {(yspan + 2*margin)*1e3:.2f} mm for a 0.25 mm cyclic gap. "
-            "Not a license to flatten the outer arc."
-        )
     return out, shift
 
 
@@ -345,9 +336,8 @@ def fit_pitch_to_metal(job: dict[str, Any], poly: list[tuple[float, float]]) -> 
     if gap < -1e-9:
         cut = 0.5 * (-gap)
         notes.append(
-            f"s={p0*1e3:.2f} mm < y-span {yspan*1e3:.2f} mm: Mark III nesting (legal pack). "
-            "Rectangle O+H cannot host it. Passage writer dark until polyline SS vs PS+s. "
-            "Outer C kept. Not σ. Not a clip."
+            f"s={p0*1e3:.2f} mm < y-span {yspan*1e3:.2f} mm: nested pack (legal if g_min>0). "
+            "Mesh uses cassette / H-O-H, not a forced s-open. Outer C kept. Not σ. Not a clip."
         )
         return notes
     if gap < 4e-5:
