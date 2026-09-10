@@ -211,17 +211,41 @@ def test_lin_mm_switches_to_pointed_round_caps():
     assert pa != pb
     assert polygon_self_intersects(pb) is False
     assert polygon_signed_area(pb) > 0
-    assert min(y for _, y in pb) < min(y for _, y in pa) - 0.001
+    # Stemmed tips extend past the L=0 dual-arc envelope (left of x=0 and/or down).
+    assert min(x for x, _ in pb) < min(x for x, _ in pa) - 0.0003
 
 
 def test_lout_is_a_stem_not_a_chord_cut():
-    """L grows the constant-area bar down the C-tip path, not a chord point."""
+    """L grows converging straights to tip T along the C-tip path, not a chord cut."""
     from impulsecalc3.geometry import pointed_bucket_profile
     kw = dict(chord_m=0.01, beta1_metal_deg=72, beta2_metal_deg=-72,
-              lout_m=0.0, r_tr_m=0.002, r_main_m=0.004, t_m=0.0014, psi_tr_deg=20)
+              lout_m=0.0, r_tr_m=0.002, r_main_m=0.004, t_m=0.0014, psi_tr_deg=20,
+              le_fillet_r_m=0.0, te_fillet_r_m=0.0,
+              upper_sagitta_m=0.005, lower_sagitta_m=0.0022)
     a = pointed_bucket_profile(lin_m=0.001, **kw)
     b = pointed_bucket_profile(lin_m=0.006, **kw)
-    assert min(p[1] for p in b) < min(p[1] for p in a) - 0.003
-    # tip is down, not parked on y=0
-    tip = min(b, key=lambda p: p[1])
-    assert tip[1] < -0.003
+    assert polygon_self_intersects(a) is False
+    assert polygon_self_intersects(b) is False
+    # Longer Lin pushes the LE tip further out along the stem heading.
+    assert min(p[0] for p in b) < min(p[0] for p in a) - 0.002
+    tip = min(b, key=lambda p: p[0])
+    assert tip[0] < -0.002
+    # Straights meet at a single tip (not a flat bar): few points share xmin.
+    xmin = min(p[0] for p in b)
+    assert sum(1 for p in b if abs(p[0] - xmin) < 1e-7) <= 3
+
+
+def test_fillet_fattens_from_pointed_tip():
+    """r=0 sharp at dual-arc tip; larger r moves the tip up the bisector."""
+    from impulsecalc3.geometry import pointed_bucket_profile
+    kw = dict(chord_m=0.01, beta1_metal_deg=65, beta2_metal_deg=-65,
+              lin_m=0.0, lout_m=0.0, upper_sagitta_m=0.005, lower_sagitta_m=0.0022)
+    sharp = pointed_bucket_profile(**kw, le_fillet_r_m=0.0, te_fillet_r_m=0.0)
+    fat = pointed_bucket_profile(**kw, le_fillet_r_m=0.0004, te_fillet_r_m=0.0004)
+    assert polygon_self_intersects(sharp) is False
+    assert polygon_self_intersects(fat) is False
+    tip_s = min(sharp, key=lambda p: p[0])
+    tip_f = min(fat, key=lambda p: p[0])
+    assert abs(tip_s[0]) < 1e-9 and abs(tip_s[1]) < 1e-9
+    assert tip_f[1] > tip_s[1] + 0.0003
+    assert polygon_signed_area(fat) < polygon_signed_area(sharp)

@@ -9,6 +9,7 @@ Optional Cartesian dump is debug-only and is never written as the forces mesh.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1475,8 +1476,8 @@ def write_polymesh(
     ys0 = [p[1] for p in poly0]
     yspan = max(ys0) - min(ys0)
     fam0 = str((job.get("geometry") or {}).get("profile_family") or "")
-    # ORBIT 2026-09-03: y(x) passage_OH is off the load path. Nested C is legal
-    # pack; rectangle O+H cannot host yspan>s — that raises, it does not clip.
+    # Nested C is legal when g_min>0 (solids miss). Cassette/H-O-H hosts yspan>=s.
+    # Only refuse true intersection. Never flatten outer arc to force a strip fit.
     use_passage = False
     passage = None
     cas = None
@@ -1551,7 +1552,10 @@ def write_polymesh(
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
     clearance_y = min(y_top - ymax, ymin - y_bot) if (passage is None and cas is None) else 1.0
     if passage is None and cas is None and clearance_y <= 1e-9:
-        raise RuntimeError("profile clearance to cyclic is non-positive (pitch rectangle cannot host this C)")
+        raise RuntimeError(
+            "profile clearance to cyclic is non-positive after center; "
+            "expected cassette path when yspan+2*d_o >= s — check Gate 0 / write_kind"
+        )
     if passage is None and cas is None:
         d_o = min(0.00045, 0.22 * max(clearance_y, 2e-6), 0.06 * spec.chord_m)
     fam = str((job.get("geometry") or {}).get("profile_family") or "")
@@ -1937,6 +1941,63 @@ def write_polymesh(
     )
 
 
+def _parse_boundary_patches(mesh_dir: Path) -> dict[str, tuple[int, int]]:
+    """name → (startFace, nFaces) from ascii polyMesh/boundary."""
+    text = (mesh_dir / "boundary").read_text(encoding="utf-8", errors="replace")
+    out: dict[str, tuple[int, int]] = {}
+    for m in re.finditer(
+        r"(\w+)\s*\{\s*[^}]*?nFaces\s+(\d+)\s*;\s*[^}]*?startFace\s+(\d+)\s*;",
+        text,
+        flags=re.S,
+    ):
+        out[m.group(1)] = (int(m.group(3)), int(m.group(2)))
+    if "frontAndBack" not in out:
+        for m in re.finditer(
+            r"(\w+)\s*\{\s*[^}]*?startFace\s+(\d+)\s*;\s*[^}]*?nFaces\s+(\d+)\s*;",
+            text,
+            flags=re.S,
+        ):
+            out[m.group(1)] = (int(m.group(2)), int(m.group(3)))
+    return out
+
+
+def _read_foam_points(mesh_dir: Path) -> np.ndarray:
+    text = (mesh_dir / "points").read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"FoamFile\s*\{.*?\}\s*", text, flags=re.S)
+    if m:
+        text = text[m.end() :]
+    m = re.search(r"(\d+)\s*\(", text)
+    if not m:
+        raise RuntimeError("polyMesh points: no count")
+    n = int(m.group(1))
+    body = text[m.end() :]
+    pts: list[tuple[float, float, float]] = []
+    for m2 in re.finditer(r"\(([^)]+)\)", body):
+        nums = m2.group(1).split()
+        if len(nums) >= 3:
+            pts.append((float(nums[0]), float(nums[1]), float(nums[2])))
+        if len(pts) >= n:
+            break
+    return np.asarray(pts, dtype=float)
+
+
+def _read_foam_faces(mesh_dir: Path) -> list[list[int]]:
+    text = (mesh_dir / "faces").read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"FoamFile\s*\{.*?\}\s*", text, flags=re.S)
+    if m:
+        text = text[m.end() :]
+    m = re.search(r"(\d+)\s*\(", text)
+    if not m:
+        raise RuntimeError("polyMesh faces: no count")
+    n = int(m.group(1))
+    body = text[m.end() :]
+    faces: list[list[int]] = []
+    for m2 in re.finditer(r"(\d+)\(([^)]+)\)", body):
+        faces.append([int(x) for x in m2.group(2).split()])
+        if len(faces) >= n:
+            break
+    return faces
+
 
 def write_mesh_preview_png(
     path: Path,
@@ -1944,51 +2005,120 @@ def write_mesh_preview_png(
     spec: BladeSpec,
     mesh: MeshBuild,
 ) -> None:
-    """2D wire of the three blade walls — proof the load mesh is body-fitted."""
+    """Gmsh/NASA-style polyMesh wire: 2D cell quads from empty frontAndBack faces.
+
+    Not the cascade metal outline. Metal is a solid cutout; fluid shows every
+    polygon edge. Reads case_dir/constant/polyMesh next to path.
+    """
+    del job, spec  # preview is polyMesh-driven; metal cutouts from MeshBuild
     try:
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.collections import LineCollection, PolyCollection
     except Exception:
         return
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=120)
-    colors = ("#c0392b", "#2471a3", "#117a65")
-    for k, poly in enumerate(mesh.blade_polys):
+
+    path = Path(path)
+    case_dir = path.parent
+    mesh_dir = case_dir / "constant" / "polyMesh"
+    if not (mesh_dir / "points").is_file() or not (mesh_dir / "faces").is_file():
+        return
+
+    try:
+        pts = _read_foam_points(mesh_dir)
+        faces = _read_foam_faces(mesh_dir)
+        patches = _parse_boundary_patches(mesh_dir)
+    except Exception:
+        return
+
+    fab = patches.get("frontAndBack")
+    if not fab:
+        return
+    start, nfaces = fab
+    z_all = pts[:, 2]
+    z_front = float(np.min(z_all))
+    z_tol = max(1e-12, 1e-6 * (float(np.max(z_all)) - z_front + 1e-16))
+
+    palette = ["#5b4b8a", "#3d6b7a", "#6b5e2e", "#6a3d5c", "#2f5d4a", "#4a4e6b"]
+    segs: list[np.ndarray] = []
+    polys_xy: list[np.ndarray] = []
+    colors: list[str] = []
+    end = min(start + nfaces, len(faces))
+    for fi in range(start, end):
+        fv = faces[fi]
+        if len(fv) < 3:
+            continue
+        xyz = pts[fv]
+        if float(np.mean(xyz[:, 2])) > z_front + z_tol:
+            continue
+        xy = xyz[:, :2] * 1000.0
+        polys_xy.append(xy)
+        closed = np.vstack([xy, xy[:1]])
+        for i in range(len(xy)):
+            segs.append(closed[i : i + 2])
+        cx, cy = float(xy[:, 0].mean()), float(xy[:, 1].mean())
+        colors.append(palette[int(abs(hash((round(cx, 1), round(cy, 1)))) % len(palette))])
+
+    fig, ax = plt.subplots(figsize=(6.2, 8.0), dpi=140)
+    ax.set_facecolor("#0b0b0f")
+    fig.patch.set_facecolor("#0b0b0f")
+
+    if polys_xy:
+        ax.add_collection(
+            PolyCollection(polys_xy, facecolors=colors, edgecolors="none", alpha=0.35, zorder=1)
+        )
+    if segs:
+        ax.add_collection(
+            LineCollection(segs, colors="#d8d4e8", linewidths=0.22, alpha=0.85, zorder=2)
+        )
+
+    metal_face = "#1a1a22"
+    metal_edge = "#e8e6f2"
+    for k, poly in enumerate(mesh.blade_polys or []):
         xs = [p[0] * 1000 for p in poly]
         ys = [p[1] * 1000 for p in poly]
-        ax.plot(xs, ys, color=colors[k % 3], lw=1.4, label=f"blade{k}")
-    try:
-        from .geometry import passage_gap as _pg
-        if mesh.blade_polys:
-            gp = _pg(mesh.blade_polys[0], mesh.pitch_m or 0.0)
-            ss, ps1 = gp["ss"], gp["ps1"]
-            ax.fill(
-                list(ss[:, 0] * 1000) + list(ps1[::-1, 0] * 1000),
-                list(ss[:, 1] * 1000) + list(ps1[::-1, 1] * 1000),
-                color="#f9e79f", alpha=0.45, lw=0, zorder=0, label=f"gap g_min={gp['g_min']*1e3:.2f} mm",
-            )
-            ax.plot(ss[:, 0] * 1000, ss[:, 1] * 1000, color="#b7950b", lw=0.8, ls=":")
-            ax.plot(ps1[:, 0] * 1000, ps1[:, 1] * 1000, color="#b7950b", lw=0.8, ls=":")
-    except Exception:
-        pass
-    ax.axhline(mesh.y_min * 1000, color="0.5", ls="--", lw=0.6)
-    ax.axhline(mesh.y_max * 1000, color="0.5", ls="--", lw=0.6)
-    ax.axvline(mesh.x_in * 1000, color="0.7", ls=":", lw=0.5)
-    ax.axvline(mesh.x_out * 1000, color="0.7", ls=":", lw=0.5)
+        ax.fill(
+            xs,
+            ys,
+            color=metal_face,
+            ec=metal_edge,
+            lw=0.9,
+            zorder=3,
+            label=("metal" if k == 0 else None),
+        )
+
+    ax.axhline(mesh.y_min * 1000, color="#6e6a82", ls="--", lw=0.5, zorder=4)
+    ax.axhline(mesh.y_max * 1000, color="#6e6a82", ls="--", lw=0.5, zorder=4)
     ax.set_aspect("equal")
-    ax.set_xlabel("x axial [mm]")
-    ax.set_ylabel("y pitch [mm]")
-    ax.set_title(f"{job.get('name', 'cascade')} body-fitted metal (not stair-step)")
-    # Crop to [-1.5c, 2c]; extra dump after TE is computational, not the view.
-    try:
-        from .job import cascade_view_xlim_m
-        x0, x1 = cascade_view_xlim_m(job)
-        ax.set_xlim(x0 * 1000.0, x1 * 1000.0)
-    except Exception:
-        pass
-    ax.legend(loc="upper right", fontsize=8)
+    ax.autoscale()
+    # Crop dump length — NASA/Gmsh blade-to-blade view, not the full outlet H-block.
+    if mesh.blade_polys:
+        mx = [p[0] * 1000 for poly in mesh.blade_polys for p in poly]
+        my = [p[1] * 1000 for poly in mesh.blade_polys for p in poly]
+        x0, x1 = min(mx), max(mx)
+        y0, y1 = min(my), max(my)
+        c = max(x1 - x0, 1.0)
+        ax.set_xlim(x0 - 0.55 * c, x1 + 1.15 * c)
+        pad = 0.12 * max(y1 - y0, c)
+        ax.set_ylim(y0 - pad, y1 + pad)
+    ax.set_xlabel("x axial [mm]  → flow")
+    ax.set_ylabel("y pitch [mm]  ↑ stack")
+    ax.set_title(
+        f"polyMesh wire · {mesh.mesh_kind} · n_cells={mesh.n_cells} · "
+        f"front quads={len(polys_xy)}",
+        fontsize=9,
+        color="#e8e6f2",
+    )
+    for spine in ax.spines.values():
+        spine.set_color("#9b97b0")
+    ax.tick_params(colors="#e8e6f2", labelsize=8)
+    ax.xaxis.label.set_color("#e8e6f2")
+    ax.yaxis.label.set_color("#e8e6f2")
+    if mesh.blade_polys:
+        ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path)
+    fig.savefig(path, facecolor="#0b0b0f", edgecolor="none")
     plt.close(fig)

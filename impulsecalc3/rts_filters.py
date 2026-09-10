@@ -93,7 +93,7 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
                     {"rts": "rotorValues.t_ri", "id": "t_ri_mm", "label": "Inlet gap", "sym": "tri", "unit": "mm", "default": 3.0},
                     {"rts": "rotorValues.gamma_turning_ri", "id": "gamma_turning_ri_deg", "label": "Inlet turning wedge", "sym": "γri", "unit": "deg", "default": -10.0},
                     {"rts": "cycle.gamma_ri", "id": "gamma_ri_deg", "label": "Rotor inlet wedge", "sym": "γri,wedge", "unit": "deg", "default": 8.0},
-                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Relative exit from axial", "sym": "β2", "unit": "deg", "default": -65.0},
+                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Relative exit from axial (impulse: β2 ≈ −β1)", "sym": "β2", "unit": "deg", "default": -65.0, "hint": "impulse: β2 ≈ −β1"},
                     {"rts": "cycle.reaction", "id": "reaction", "label": "Degree of reaction", "sym": "R", "unit": "—", "default": 0.0},
                 ],
             },
@@ -106,6 +106,8 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
                     {"rts": "(ic3)", "id": "te_mm", "label": "TE fillet", "sym": "rTE", "unit": "mm", "default": 0.0},
                     {"rts": "(ic3)", "id": "lin_mm", "label": "Inlet straight", "sym": "Lin", "unit": "mm", "default": 0.0},
                     {"rts": "(ic3)", "id": "lout_mm", "label": "Outlet straight", "sym": "Lout", "unit": "mm", "default": 0.0},
+                    {"rts": "(ic3)", "id": "passage_depth_mm", "label": "Passage depth (fillet-foot clearance)", "sym": "g_pass", "unit": "mm", "default": None, "hint": "Auto = min dist from fillet-metal foot (or tip) to blade below"},
+                    {"rts": "(ic3)", "id": "constant_passage_width", "label": "Constant passage width", "sym": "g≈const", "unit": "flag", "default": False, "hint": "Rebuild facing walls concentric (ΔR=g_pass). hl slaved; hu/fillets free. Pitch too if g_pass is set."},
                 ],
             },
         },
@@ -118,7 +120,7 @@ SMART_INTENTS: dict[str, list[str]] = {
     "horizontal": ["dm_mm", "Z", "solidity", "epsilon", "chord_mm"],
     "vertical": ["chord_mm", "hu_mm", "hl_mm", "solidity"],
     "size": ["dm_mm", "chord_mm", "Z", "solidity", "epsilon", "omega_rps"],
-    "metal": ["hu_mm", "hl_mm", "le_mm", "te_mm", "lin_mm", "lout_mm", "r_le_ratio", "r_te_ratio", "unguided_turning_deg", "beta2_deg", "reaction"],
+    "metal": ["hu_mm", "hl_mm", "le_mm", "te_mm", "lin_mm", "lout_mm", "passage_depth_mm", "constant_passage_width", "r_le_ratio", "r_te_ratio", "unguided_turning_deg", "beta2_deg", "reaction"],
     "flow_rate": ["mdot_kg_s", "p1_Pa", "T1_K", "W1_m_s", "dm_mm", "epsilon"],
 }
 
@@ -151,6 +153,30 @@ def schema_payload() -> dict[str, Any]:
         "defaults": prof["values"],
     }
 
+
+
+def sanitize_impulse_betas(profile: dict[str, Any]) -> dict[str, Any]:
+    """Keep impulse article from re-poisoning stagger via stale β2=+16 saved profiles."""
+    if not isinstance(profile, dict):
+        return profile
+    v = profile.setdefault("values", {})
+    try:
+        b1 = float(v.get("beta1_deg") if v.get("beta1_deg") not in (None, "") else 65.0)
+    except (TypeError, ValueError):
+        b1 = 65.0
+    try:
+        b2 = float(v.get("beta2_deg") if v.get("beta2_deg") not in (None, "") else -abs(b1))
+    except (TypeError, ValueError):
+        b2 = -abs(b1)
+    # Poisoned chrome default was +16 with β1=+65 → bogus ~40° stagger.
+    if abs(b2 - 16.0) < 1e-6 and abs(b1 - 65.0) < 1e-6:
+        b2 = -abs(b1)
+    # Impulse law until ORBIT signs otherwise: β2 ≈ −β1 when |β2| looks unsigned/wrong-sign.
+    if b2 > 0 and b1 > 0 and abs(abs(b2) - abs(b1)) > 20.0:
+        b2 = -abs(b1)
+    v["beta1_deg"] = b1
+    v["beta2_deg"] = b2
+    return profile
 
 def defaults_profile() -> dict[str, Any]:
     """Central profile written by Update. Flat id→value plus metadata."""
@@ -185,6 +211,8 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
         ("hl_mm", "hl_mm"),
         ("le_mm", "le_mm"),
         ("te_mm", "te_mm"),
+        ("passage_depth_mm", "passage_depth_mm"),
+        ("s_mm", "s_mm"),
         ("lin_mm", "lin_mm"),
         ("lout_mm", "lout_mm"),
         ("chord_mm", "chord_mm"),
@@ -206,3 +234,60 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
     if "dm_mm" in v and v["dm_mm"] not in (None, ""):
         knobs["mean_radius_m"] = float(v["dm_mm"]) * 5e-4  # dm/2
     return knobs
+
+
+def apply_constant_passage_to_profile(profile: dict) -> tuple[dict, dict]:
+    """If constant_passage_width: Goldman concentric walls, ΔR = g_pass.
+
+    Auto fills passage_depth_mm from fillet-foot→blade-below min distance.
+    hl is slaved (Cl = Cu − pitch ŷ). Pitch too when a g_pass target is set.
+    """
+    from .geometry import apply_constant_passage_width, measure_fillet_foot_clearance
+    from .preview import knobs_to_job
+
+    if not isinstance(profile, dict):
+        return profile, {"ok": False, "reason": "no profile"}
+    v = profile.setdefault("values", {})
+    flag = v.get("constant_passage_width")
+    on = flag in (True, 1, "1", "true", "True", "yes", "on")
+    v["constant_passage_width"] = bool(on)
+    if not on:
+        return profile, {"ok": True, "enabled": False}
+
+    knobs = profile_to_ic3_knobs(profile)
+    knobs["family"] = "impulse_bucket"
+    knobs["constant_passage_width"] = False
+    if v.get("passage_depth_mm") not in (None, ""):
+        knobs["passage_depth_mm"] = float(v["passage_depth_mm"])
+    job = knobs_to_job(knobs)
+    if v.get("passage_depth_mm") not in (None, ""):
+        job.setdefault("geometry", {})["passage_depth_m"] = float(v["passage_depth_mm"]) * 1e-3
+    job, report = apply_constant_passage_width(job)
+    if report.get("ok"):
+        if report.get("passage_depth_mm") is not None:
+            v["passage_depth_mm"] = float(report["passage_depth_mm"])
+        if report.get("pitch_mm") is not None:
+            # surface pitch via solidity if possible — store s_mm helper
+            v["s_mm"] = float(report["pitch_mm"])
+        if report.get("hl_mm") is not None:
+            v["hl_mm"] = float(report["hl_mm"])
+    report["enabled"] = True
+    return profile, report
+
+
+def auto_passage_depth_for_profile(profile: dict) -> tuple[dict, dict]:
+    """Measure fillet-foot clearance → write values.passage_depth_mm. No pitch move."""
+    from .geometry import measure_fillet_foot_clearance
+    from .preview import knobs_to_job
+
+    if not isinstance(profile, dict):
+        return profile, {"ok": False, "reason": "no profile"}
+    v = profile.setdefault("values", {})
+    knobs = profile_to_ic3_knobs(profile)
+    knobs["family"] = "impulse_bucket"
+    knobs["constant_passage_width"] = False
+    job = knobs_to_job(knobs)
+    meas = measure_fillet_foot_clearance(job)
+    if meas.get("ok"):
+        v["passage_depth_mm"] = float(meas["passage_depth_mm"])
+    return profile, meas

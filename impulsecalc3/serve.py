@@ -34,9 +34,15 @@ from .preview import (
 HOST = "127.0.0.1"
 PORT = 8766
 APP_HTML = ROOT / "viewer" / "app.html"
+MAIN35_HTML = ROOT / "viewer" / "main35.html"
 FILTERS_HTML = ROOT / "viewer" / "filters.html"
 PREVIEW_CASE = ROOT / APP_OUTPUT / "openfoam_cases" / APP_NAME
-LAST_PNG = PREVIEW_CASE / "mesh_preview.png"
+PREVIEW_OUT = ROOT / APP_OUTPUT
+# Outline (metal cascade) and mesh wire must stay on distinct paths.
+LAST_OUTLINE_PNG = PREVIEW_CASE / "outline_preview.png"
+LAST_MESH_PNG = PREVIEW_CASE / "mesh_preview.png"
+# Legacy alias: older code / tests may still refer to LAST_PNG as the browser outline.
+LAST_PNG = LAST_OUTLINE_PNG
 LAST_JOB = ROOT / APP_OUTPUT / f"{APP_NAME}.json"
 PROFILE_PATH = ROOT / APP_OUTPUT / "ic35_profile.json"
 LAST_REPORT = ROOT / APP_OUTPUT / f"{APP_NAME}_report.json"
@@ -59,6 +65,41 @@ def resolve_plot(name: str) -> Path | None:
     return None
 
 
+def resolve_outline_png() -> Path | None:
+    """Last cascade-metal outline preview (not the mesh wire)."""
+    for cand in (
+        LAST_OUTLINE_PNG,
+        PREVIEW_OUT / "outline_preview.png",
+        PREVIEW_CASE / "outline_preview.png",
+    ):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def resolve_mesh_png() -> Path | None:
+    """Last body-fitted mesh wire preview (not the cascade outline)."""
+    for cand in (
+        LAST_MESH_PNG,
+        PREVIEW_OUT / "mesh_preview.png",
+        PREVIEW_CASE / "mesh_preview.png",
+        ROOT / APP_OUTPUT / "plots" / "mesh_preview.png",
+        ROOT / APP_OUTPUT / "viewer_plots" / "mesh_preview.png",
+    ):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def list_field_plots() -> list[dict[str, str]]:
+    """Existing CFD field PNGs for the Fields tab."""
+    out: list[dict[str, str]] = []
+    for name in sorted(PLOT_NAMES):
+        if resolve_plot(name) is not None:
+            out.append({"name": name, "url": f"/plot/{name}"})
+    return out
+
+
 _RUNNING = frozenset({"meshing", "solving"})
 
 _lock = threading.Lock()
@@ -74,6 +115,10 @@ _IDLE: dict[str, Any] = {
     "Ft_N": None,
     "Fd_N": None,
     "cfd_ran": False,
+    "mesh_ok": None,
+    "n_cells": None,
+    "failed_checks": None,
+    "checkMesh": None,
     "t0": None,
     "elapsed_s": 0.0,
     "heartbeat": "idle",
@@ -300,6 +345,21 @@ def status_payload() -> dict[str, Any]:
             if snap.get(k) is None and res.get(k) is not None:
                 snap[k] = res[k]
     snap["eta_from_cfd"] = None
+    # Mesh summary from last mesh job / report (independent of CFD fields).
+    res = snap.get("result") if isinstance(snap.get("result"), dict) else {}
+    if snap.get("mesh_ok") is None and isinstance(res.get("flags"), dict):
+        snap["mesh_ok"] = res["flags"].get("mesh_ok")
+    if snap.get("checkMesh") is None and res.get("checkMesh") is not None:
+        snap["checkMesh"] = res.get("checkMesh")
+    if snap.get("failed_checks") is None and snap.get("checkMesh") is not None:
+        snap["failed_checks"] = snap.get("checkMesh")
+    if snap.get("n_cells") is None and isinstance(res.get("mesh"), dict):
+        snap["n_cells"] = res["mesh"].get("n_cells")
+    snap["outline_available"] = resolve_outline_png() is not None
+    snap["mesh_available"] = resolve_mesh_png() is not None
+    snap["outline_png"] = "/outline.png"
+    snap["mesh_png"] = "/mesh.png"
+    snap["field_plots"] = list_field_plots() if snap.get("cfd_ran") else []
     for k in (
         "phase",
         "elapsed_s",
@@ -310,6 +370,10 @@ def status_payload() -> dict[str, Any]:
         "success",
         "kind",
         "cfd_ran",
+        "mesh_ok",
+        "n_cells",
+        "failed_checks",
+        "checkMesh",
         "Ft_N",
         "Fd_N",
         "error",
@@ -649,6 +713,10 @@ def _begin_job(phase: str, kind: str) -> bool:
         _state["success"] = False
         _state["authority"] = AUTHORITY_SCOPING
         _state["cfd_ran"] = False
+        _state["mesh_ok"] = None
+        _state["n_cells"] = None
+        _state["failed_checks"] = None
+        _state["checkMesh"] = None
         _state["Ft_N"] = None
         _state["Fd_N"] = None
         _state["result"] = None
@@ -675,7 +743,8 @@ def _run_mesh(knobs: dict[str, Any]) -> dict[str, Any]:
     from .run import run_job
 
     job = knobs_to_job(knobs)
-    job_path = Path(write_preview(job)["job_json"])
+    info = write_preview(job)
+    job_path = Path(info["job_json"])
     of = openfoam_available()
     if not of:
         return {
@@ -685,9 +754,14 @@ def _run_mesh(knobs: dict[str, Any]) -> dict[str, Any]:
             "success": False,
             "cfd_ran": False,
             "of_present": False,
+            "mesh_ok": info.get("n_cells") is not None,
+            "failed_checks": None,
             "note": "OpenFOAM not on this machine. Case written (SCOPING). Building a case is not running CFD.",
-            "png": "/outline.png",
-            "n_cells": None,
+            "png": "/mesh.png",
+            "outline_png": "/outline.png",
+            "mesh_png": "/mesh.png",
+            "n_cells": info.get("n_cells"),
+            "mesh_kind": info.get("mesh_kind"),
             "hardware_correlated": False,
             "report": None,
         }
@@ -703,7 +777,9 @@ def _run_mesh(knobs: dict[str, Any]) -> dict[str, Any]:
         "failed_checks": (rep.get("checkMesh") or {}).get("failed_checks"),
         "errors": rep.get("errors"),
         "n_cells": (rep.get("mesh") or {}).get("n_cells"),
-        "png": "/outline.png",
+        "png": "/mesh.png",
+        "outline_png": "/outline.png",
+        "mesh_png": "/mesh.png",
         "note": "checkMesh ran. Building a case / meshing is not FIELD_CFD.",
         "hardware_correlated": False,
         "report": rep,
@@ -732,6 +808,10 @@ def _mesh_worker(knobs: dict[str, Any]) -> None:
             _state["authority"] = AUTHORITY_SCOPING
             _state["success"] = False
             _state["cfd_ran"] = False
+            _state["mesh_ok"] = out.get("mesh_ok")
+            _state["n_cells"] = out.get("n_cells")
+            _state["failed_checks"] = out.get("failed_checks")
+            _state["checkMesh"] = out.get("failed_checks")
             _clear_status_forces(_state)
             if err:
                 _state["error"] = err
@@ -822,16 +902,42 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path in ("/", "/app.html", "/index.html"):
+        if path in ("/", "/index.html", "/main35.html"):
+            html = MAIN35_HTML.read_bytes() if MAIN35_HTML.is_file() else b"<h1>missing viewer/main35.html</h1>"
+            self._send(200, html, "text/html; charset=utf-8")
+            return
+        if path == "/legacy.html":
             html = APP_HTML.read_bytes() if APP_HTML.is_file() else b"<h1>missing viewer/app.html</h1>"
             self._send(200, html, "text/html; charset=utf-8")
             return
         if path == "/outline.png":
-            png = LAST_PNG
-            if png.is_file():
+            png = resolve_outline_png()
+            if png is not None:
                 self._send(200, png.read_bytes(), "image/png")
             else:
                 self._json(404, {"ok": False, "error": "no outline yet", "authority": AUTHORITY_SCOPING})
+            return
+        if path == "/mesh.png":
+            png = resolve_mesh_png()
+            if png is not None:
+                self._send(200, png.read_bytes(), "image/png")
+            else:
+                self._json(404, {"ok": False, "error": "no mesh preview yet — Run mesh", "authority": AUTHORITY_SCOPING})
+            return
+        if path == "/plots":
+            with _lock:
+                ran = bool(_state.get("cfd_ran"))
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "cfd_ran": ran,
+                    "plots": list_field_plots() if ran else [],
+                    "authority": AUTHORITY_SCOPING if not ran else AUTHORITY_FIELD_CFD,
+                    "predicted": True,
+                    "note": None if ran else "No solve yet — Run solve when OF present",
+                },
+            )
             return
         if path.startswith("/plot/"):
             name = path[len("/plot/"):]
@@ -928,6 +1034,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
             else:
                 prof = defaults_profile()
+            from .rts_filters import sanitize_impulse_betas
+            prof = sanitize_impulse_betas(prof)
+            if PROFILE_PATH.is_file():
+                PROFILE_PATH.write_text(json.dumps(prof, indent=2), encoding="utf-8")
             self._json(200, {"ok": True, "profile": prof, "authority": AUTHORITY_SCOPING, "predicted": True})
             return
         if path == "/defaults":
@@ -965,6 +1075,38 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json(400, {"ok": False, "error": _safe_error(exc), "authority": AUTHORITY_SCOPING})
             return
+        if path == "/api/passage_depth/auto":
+            from .rts_filters import defaults_profile, sanitize_impulse_betas, auto_passage_depth_for_profile
+            base = defaults_profile()
+            if PROFILE_PATH.is_file():
+                try:
+                    base = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    pass
+            vals = dict(base.get("values") or {})
+            incoming = knobs.get("values") if isinstance(knobs.get("values"), dict) else knobs
+            if isinstance(incoming, dict):
+                for k, v in incoming.items():
+                    if k in ("format", "authority", "predicted", "article", "rts_map", "values"):
+                        continue
+                    vals[k] = v
+            base["values"] = vals
+            base = sanitize_impulse_betas(base)
+            base, meas = auto_passage_depth_for_profile(base)
+            PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
+            self._json(
+                200,
+                {
+                    "ok": bool(meas.get("ok")),
+                    "profile": base,
+                    "measure": meas,
+                    "passage_depth_mm": (base.get("values") or {}).get("passage_depth_mm"),
+                    "authority": AUTHORITY_SCOPING,
+                    "predicted": True,
+                },
+            )
+            return
         if path == "/api/profile/update":
             from .rts_filters import defaults_profile, profile_to_ic3_knobs
             base = defaults_profile()
@@ -981,18 +1123,25 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     vals[k] = v
             base["values"] = vals
+            from .rts_filters import sanitize_impulse_betas, apply_constant_passage_to_profile
+            base = sanitize_impulse_betas(base)
+            base, cpw_report = apply_constant_passage_to_profile(base)
             base["format"] = "impulsecalc35_profile_v1"
             base["authority"] = AUTHORITY_SCOPING
             base["predicted"] = True
             PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
             PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
             mapped = profile_to_ic3_knobs(base)
+            mapped["constant_passage_width"] = bool((base.get("values") or {}).get("constant_passage_width"))
+            if cpw_report.get("ok") and cpw_report.get("hl_mm") is not None:
+                mapped["hl_mm"] = float(cpw_report["hl_mm"])
             self._json(
                 200,
                 {
                     "ok": True,
                     "profile": base,
                     "knobs": mapped,
+                    "constant_passage": cpw_report,
                     "path": str(PROFILE_PATH),
                     "authority": AUTHORITY_SCOPING,
                     "predicted": True,
@@ -1060,9 +1209,11 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
                 return
-            # write_preview dict (SCOPING). Browser PNG is the /outline.png route.
+            # write_preview dict (SCOPING). Browser PNG routes stay distinct.
             out = dict(info)
             out["png"] = "/outline.png"
+            out["outline_png"] = "/outline.png"
+            out["mesh_png"] = "/mesh.png" if resolve_mesh_png() is not None else None
             out["ok"] = True
             out["authority"] = AUTHORITY_SCOPING
             out["predicted"] = True

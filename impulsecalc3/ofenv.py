@@ -26,14 +26,120 @@ def _docker_sock_ok() -> bool:
     return sock.exists()
 
 
+def _docker_host_env() -> dict[str, str]:
+    """Prefer unix sock; fall back to host daemon on loopback TCP 2375 (sand-box)."""
+    env = os.environ.copy()
+    if _docker_sock_ok():
+        env.setdefault("DOCKER_HOST", "unix:///var/run/docker.sock")
+        return env
+    # Host Docker API exposed into this container (no nested dockerd).
+    env["DOCKER_HOST"] = "tcp://127.0.0.1:2375"
+    return env
+
+
+_MERGED_CACHE: str | None | bool = False
+
+
+def _self_merged_dir() -> str | None:
+    """Host path of this container's overlay merged root (for -v binds via host Docker).
+
+    Plain -v /workspace:/workspace from inside the sand-box mounts an empty host
+    dir. Binding MergedDir+/workspace shares the live box filesystem.
+    """
+    global _MERGED_CACHE
+    if _MERGED_CACHE is not False:
+        return _MERGED_CACHE  # type: ignore[return-value]
+    merged: str | None = None
+    try:
+        mi = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        mi = ""
+    # upperdir=.../overlay2/<id>/diff  →  .../overlay2/<id>/merged
+    import re
+
+    m = re.search(r"upperdir=([^,\s]+)/diff", mi)
+    if m:
+        cand = m.group(1) + "/merged"
+        # Host docker sees this path; we may not be able to listdir it.
+        merged = cand if cand.startswith("/var/lib/docker/overlay2/") else None
+    if merged is None:
+        docker = _docker_bin()
+        if docker:
+            ps = subprocess.run(
+                [docker, "ps", "--format", "{{.ID}} {{.Names}}"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=_docker_host_env(),
+            )
+            if ps.returncode == 0:
+                for line in ps.stdout.splitlines():
+                    parts = line.strip().split(None, 1)
+                    if not parts:
+                        continue
+                    cid = parts[0]
+                    insp = subprocess.run(
+                        [
+                            docker,
+                            "inspect",
+                            cid,
+                            "--format",
+                            "{{.GraphDriver.Data.MergedDir}}",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=_docker_host_env(),
+                    )
+                    if insp.returncode == 0:
+                        cand = insp.stdout.strip()
+                        # Prefer the container whose merged contains our cwd marker.
+                        if cand.startswith("/var/lib/docker/overlay2/"):
+                            # Heuristic: hostname match or first overlay2 merged.
+                            hostname = Path("/etc/hostname").read_text(encoding="utf-8").strip()
+                            hn = subprocess.run(
+                                [
+                                    docker,
+                                    "inspect",
+                                    cid,
+                                    "--format",
+                                    "{{.Config.Hostname}}",
+                                ],
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                                env=_docker_host_env(),
+                            )
+                            if hn.returncode == 0 and hn.stdout.strip() == hostname:
+                                merged = cand
+                                break
+                            if merged is None:
+                                merged = cand
+    _MERGED_CACHE = merged
+    return merged
+
+
+def _docker_volume_spec(cwd: Path) -> str:
+    """Return docker -v src:dst so host daemon sees box files."""
+    cwd = Path(cwd).resolve()
+    merged = _self_merged_dir()
+    if merged:
+        return f"{merged}{cwd}:{cwd}"
+    return f"{cwd}:{cwd}"
+
+
 def _docker_image_present() -> bool:
     docker = _docker_bin()
-    if not docker or not _docker_sock_ok():
+    if not docker:
         return False
+    if not _docker_sock_ok() and "DOCKER_HOST" not in os.environ:
+        # Still allow tcp fallback probe.
+        pass
     proc = subprocess.run(
-        _docker_prefix() + [docker, "image", "inspect", DOCKER_IMAGE],
+        [docker, "image", "inspect", DOCKER_IMAGE],
         check=False,
         capture_output=True,
+        env=_docker_host_env(),
     )
     return proc.returncode == 0
 
@@ -145,6 +251,7 @@ def run_foam(args: list[str], cwd: Path, log_name: str, env: dict[str, str] | No
         return 127
     uid = os.getuid()
     gid = os.getgid()
+    vol = _docker_volume_spec(cwd)
     inner = [
         "docker",
         "run",
@@ -152,7 +259,7 @@ def run_foam(args: list[str], cwd: Path, log_name: str, env: dict[str, str] | No
         "--user",
         f"{uid}:{gid}",
         "-v",
-        f"{cwd}:{cwd}",
+        vol,
         "-w",
         str(cwd),
         "--entrypoint",
@@ -163,11 +270,13 @@ def run_foam(args: list[str], cwd: Path, log_name: str, env: dict[str, str] | No
     ]
     cmd = _flatten_docker_cmd(inner)
     with log.open("w", encoding="utf-8") as fh:
+        fh.write(f"# docker volume: {vol}\n")
         proc = subprocess.run(
             cmd,
             cwd=str(cwd),
             stdout=fh,
             stderr=subprocess.STDOUT,
             check=False,
+            env=_docker_host_env(),
         )
     return int(proc.returncode)

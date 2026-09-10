@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ImpulseCalc 3.5</title>
+<style>
+:root {
+  --bg: #0b0b0f;
+  --panel: #12121a;
+  --line: #2a2740;
+  --ink: #e8e6f2;
+  --muted: #9b97b0;
+  --purple: #7c5cff;
+  --purple2: #a78bfa;
+  --purple-dim: rgba(124, 92, 255, 0.18);
+  --danger: #f07178;
+  --ok: #7fd99a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+button {
+  background: #1a1828; border: 1px solid var(--line); color: var(--ink);
+  padding: .42rem .7rem; cursor: pointer; border-radius: 2px;
+}
+button:hover:not(:disabled) { border-color: var(--purple); color: #fff; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary {
+  background: var(--purple); border-color: var(--purple); color: #0b0b0f; font-weight: 650;
+}
+button.primary:hover:not(:disabled) { background: var(--purple2); border-color: var(--purple2); color: #0b0b0f; }
+.badge {
+  font: 10px/1 ui-monospace, monospace; letter-spacing: .06em; text-transform: uppercase;
+  border: 1px solid var(--purple); color: var(--purple2); padding: .18rem .4rem; border-radius: 2px;
+}
+.badge.scoping { border-color: #5a5478; color: var(--muted); }
+.app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; height: 100dvh; }
+header.top {
+  display: flex; flex-wrap: wrap; gap: .55rem; align-items: center;
+  padding: .55rem .75rem; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header.top h1 { margin: 0; font-size: 1rem; font-weight: 700; letter-spacing: -.02em; }
+header.top h1 span { color: var(--purple2); font-weight: 500; }
+.actions { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-left: auto; }
+#ofnote { font: 11px ui-monospace, monospace; color: var(--muted); max-width: 22rem; }
+.stage {
+  display: grid; grid-template-columns: minmax(16rem, 20rem) minmax(0, 1fr);
+  min-height: 0; overflow: hidden;
+}
+@media (max-width: 900px) {
+  .stage { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+}
+.rail {
+  border-right: 1px solid var(--line); background: var(--panel);
+  overflow: auto; padding: .65rem .7rem 1.2rem; min-height: 0;
+}
+.cert {
+  font-size: .78rem; color: var(--muted); border: 1px solid var(--line);
+  background: var(--purple-dim); padding: .45rem .55rem; margin: 0 0 .65rem;
+}
+.cert b { color: var(--ink); }
+.readout {
+  font: 11px/1.45 ui-monospace, monospace; color: var(--ink);
+  border: 1px solid var(--line); padding: .4rem .5rem; margin: 0 0 .7rem;
+  white-space: pre-wrap; word-break: break-word; background: #0e0e16;
+}
+.tabs { display: flex; gap: .25rem; flex-wrap: wrap; margin: 0 0 .45rem; }
+.tabs button {
+  font-size: 11px; padding: .28rem .45rem; background: transparent;
+}
+.tabs button.active { border-color: var(--purple); color: var(--purple2); background: var(--purple-dim); }
+.hint { font-size: .72rem; color: var(--muted); margin: 0 0 .55rem; }
+.fields { display: flex; flex-direction: column; gap: .35rem; }
+.knob {
+  border: 1px solid var(--line); border-left: 3px solid var(--purple);
+  padding: .35rem .45rem; background: #0e0e16;
+}
+.knob.sys-gas { border-left-color: #6b8cff; }
+.knob.sys-pack { border-left-color: #a78bfa; }
+.knob.sys-metal { border-left-color: #7c5cff; }
+.knob-head { display: flex; gap: .35rem; align-items: baseline; margin-bottom: .2rem; }
+.knob-label { font-weight: 600; font-size: .78rem; }
+.knob-sym { font: 12px ui-serif, Georgia, serif; color: var(--purple2); }
+.knob-unit { margin-left: auto; font: 10px ui-monospace, monospace; color: var(--muted); }
+.knob-rts { font: 10px ui-monospace, monospace; color: #6e6a82; margin-bottom: .2rem; }
+.knob input[type=number] {
+  width: 100%; background: #161622; border: 1px solid var(--line);
+  padding: .28rem .4rem; border-radius: 2px;
+}
+.knob input[type=number]:focus { outline: 1px solid var(--purple); border-color: var(--purple); }
+.main {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg);
+}
+.plot-head {
+  display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap;
+  padding: .45rem .7rem; border-bottom: 1px solid var(--line);
+}
+.plot-head h2 { margin: 0; font-size: .85rem; font-weight: 650; }
+.plot-head .sub { font: 11px ui-monospace, monospace; color: var(--muted); }
+.plot-wrap {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: .5rem; background: #08080c;
+}
+.plot-wrap img {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  background: #0b0b0f; border: 1px solid var(--line);
+}
+#btn-const-passage.active {
+  border-color: var(--ok); color: var(--ok); background: rgba(60,140,90,.15);
+}
+#results_readout { border-color: #3d2a6b; }
+#results_readout.has-cfd { border-color: var(--ok); color: var(--ink); }
+footer.status {
+  border-top: 1px solid var(--line); background: var(--panel);
+  padding: .35rem .75rem; font: 11px/1.35 ui-monospace, monospace; color: var(--muted);
+  min-height: 1.6rem;
+}
+footer.status .warn { color: var(--danger); }
+footer.status .ok { color: var(--ok); }
+.view-tabs { display: flex; gap: .3rem; flex-wrap: wrap; margin-right: .4rem; }
+.view-tabs button {
+  font-size: 11px; padding: .28rem .55rem; background: transparent;
+  letter-spacing: .04em; text-transform: uppercase;
+}
+.view-tabs button.active {
+  border-color: var(--purple); color: var(--purple2); background: var(--purple-dim);
+}
+.view-pane { display: none; flex: 1; min-height: 0; flex-direction: column; }
+.view-pane.active { display: flex; }
+.empty-state {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 1.2rem; color: var(--muted); text-align: center;
+  font: 12px/1.5 ui-monospace, monospace; background: #08080c;
+  border: 1px dashed var(--line); margin: .5rem;
+}
+.fields-gallery {
+  flex: 1; min-height: 0; overflow: auto; padding: .5rem;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: .55rem; align-content: start; background: #08080c;
+}
+.fields-gallery figure {
+  margin: 0; border: 1px solid var(--line); background: #0b0b0f; padding: .35rem;
+}
+.fields-gallery figcaption {
+  font: 10px ui-monospace, monospace; color: var(--muted); margin-bottom: .25rem;
+}
+.fields-gallery img { width: 100%; height: auto; display: block; background: #0b0b0f; }
+.mesh-meta {
+  font: 11px ui-monospace, monospace; color: var(--muted);
+  padding: 0 .7rem .35rem; border-bottom: 1px solid var(--line);
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>ImpulseCalc <span>3.5</span></h1>
+    <span class="badge" id="badge_pred">PREDICTED</span>
+    <span class="badge scoping" id="badge_auth">SCOPING</span>
+    <div class="actions">
+      <button type="button" id="btn-inputs">Inputs</button>
+      <button type="button" id="btn-update-profile">Update profile</button>
+      <button type="button" class="primary" id="btn-update-outline">Update outline</button>
+      <button type="button" id="btn-const-passage" title="Rebuild facing walls concentric (ΔR=g_pass). hl slaved. Use Auto first.">Const. passage</button>
+      <button type="button" id="btn-mesh">Run mesh</button>
+      <button type="button" id="btn-solve" disabled>Run solve</button>
+      <span id="ofnote">Checking OpenFOAM…</span>
+    </div>
+  </header>
+
+  <div class="stage">
+    <aside class="rail">
+      <div class="cert">
+        Engineering aid, <b>not a flight certificate</b>.
+        PREDICTED is not a design load. Cascade from signed 3.5 metal
+        (impulse_bucket dual-arc / Pritchard path) via live <code>/outline</code>.
+      </div>
+      <div class="readout" id="profile_readout">Central profile: loading…</div>
+      <div class="readout" id="results_readout">No solve yet — Run mesh / Run solve. Numbers land here from /status.</div>
+      <div class="tabs" id="group_tabs">
+        <button type="button" class="active" data-group="metal">Metal</button>
+        <button type="button" data-group="size">Size</button>
+        <button type="button" data-group="inlet_gas">Inlet</button>
+      </div>
+      <p class="hint" id="group_hint">Number fields only — no packing slider rail. Full RTS filters via Inputs.</p>
+      <div class="fields" id="fields"></div>
+    </aside>
+
+    <section class="main">
+      <div class="plot-head">
+        <div class="view-tabs" id="view_tabs" role="tablist">
+          <button type="button" class="active" data-view="outline" role="tab" aria-selected="true">Outline</button>
+          <button type="button" data-view="mesh" role="tab" aria-selected="false">Mesh</button>
+          <button type="button" data-view="fields" role="tab" aria-selected="false">Fields</button>
+        </div>
+        <h2 id="view_title">Cascade outline (metal)</h2>
+        <span class="sub" id="plot_meta">POST /outline → GET /outline.png</span>
+      </div>
+
+      <div class="view-pane active" id="pane_outline" data-view="outline">
+        <div class="plot-wrap">
+          <img id="outline" alt="Cascade outline (metal)" src="/outline.png"/>
+        </div>
+      </div>
+
+      <div class="view-pane" id="pane_mesh" data-view="mesh">
+        <div class="mesh-meta" id="mesh_meta">No mesh yet — Run mesh (checkMesh status appears here)</div>
+        <div class="plot-wrap" id="mesh_wrap">
+          <img id="mesh_img" alt="polyMesh cell wire (Gmsh-style)" src="/mesh.png" style="display:none"/>
+          <div class="empty-state" id="mesh_empty">No polyMesh wire yet — Run mesh (draws frontAndBack quads, not outline)</div>
+        </div>
+      </div>
+
+      <div class="view-pane" id="pane_fields" data-view="fields">
+        <div class="empty-state" id="fields_empty">No solve yet — Run solve when OF present</div>
+        <div class="fields-gallery" id="fields_gallery" style="display:none"></div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="status" id="status_line" aria-live="polite">idle</footer>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let SCHEMA = null;
+  let VALUES = {};
+  let group = "metal";
+  let ofPresent = false;
+  let inFlight = false;
+  let lastKnobs = null;
+  let outlineSeq = 0;
+  let viewMode = "outline";
+  let cfdRan = false;
+  let constantPassage = false;
+  let lastCpw = null;
+  let lastMeshStatus = null;
+  const FIELD_PLOT_NAMES = [
+    "force_history.png", "contour_p.png", "contour_U.png", "contour_stream.png",
+    "contour_M.png", "contour_shock.png", "contour_T.png", "wall_cp_blade0.png", "triangles.png"
+  ];
+
+  // Packing slider rail ids — never render as range inputs on this page.
+  const PACK_SLIDER_IDS = new Set(["s_mm", "sigma", "c", "r", "s", "packing"]);
+
+  function setStatus(msg, cls) {
+    const el = $("status_line");
+    el.className = "status" + (cls ? " " + cls : "");
+    el.textContent = msg || "";
+  }
+
+  function setView(mode) {
+    viewMode = mode === "mesh" || mode === "fields" ? mode : "outline";
+    document.querySelectorAll("#view_tabs button").forEach((b) => {
+      const on = b.dataset.view === viewMode;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    document.querySelectorAll(".view-pane").forEach((p) => {
+      p.classList.toggle("active", p.dataset.view === viewMode);
+    });
+    const titles = {
+      outline: "Cascade outline (metal)",
+      mesh: "polyMesh cell wire (Gmsh-style)",
+      fields: "CFD field plots",
+    };
+    $("view_title").textContent = titles[viewMode] || titles.outline;
+    if (viewMode === "outline") {
+      if (!$("plot_meta").dataset.locked) {
+        $("plot_meta").textContent = "POST /outline → GET /outline.png";
+      }
+    } else if (viewMode === "mesh") {
+      paintMeshMeta(lastMeshStatus);
+      bumpMeshImg();
+    } else {
+      paintFieldsView();
+    }
+  }
+
+  function paintMeshMeta(st) {
+    const el = $("mesh_meta");
+    if (!st) {
+      el.textContent = "No mesh yet — Run mesh (checkMesh status appears here)";
+      return;
+    }
+    const bits = [];
+    if (st.mesh_ok != null) bits.push("mesh_ok=" + String(st.mesh_ok));
+    if (st.n_cells != null) bits.push("n_cells=" + st.n_cells);
+    const fc = st.failed_checks != null ? st.failed_checks : st.checkMesh;
+    if (fc != null) bits.push("checkMesh failed_checks=" + JSON.stringify(fc));
+    if (st.kind) bits.push("kind=" + st.kind);
+    if (st.phase) bits.push("phase=" + st.phase);
+    el.textContent = bits.length
+      ? bits.join(" · ")
+      : (st.mesh_available ? "polyMesh wire available · /mesh.png" : "No mesh yet — Run mesh");
+  }
+
+  function bumpMeshImg() {
+    const img = $("mesh_img");
+    const empty = $("mesh_empty");
+    const url = "/mesh.png?t=" + Date.now();
+    const probe = new Image();
+    probe.onload = () => {
+      img.src = url;
+      img.style.display = "";
+      empty.style.display = "none";
+    };
+    probe.onerror = () => {
+      img.style.display = "none";
+      empty.style.display = "";
+      empty.textContent = "No polyMesh wire yet — Run mesh (draws frontAndBack quads, not outline)";
+    };
+    probe.src = url;
+  }
+
+  function paintFieldsView() {
+    const empty = $("fields_empty");
+    const gal = $("fields_gallery");
+    if (!cfdRan) {
+      empty.style.display = "";
+      empty.textContent = "No solve yet — Run solve when OF present";
+      gal.style.display = "none";
+      gal.innerHTML = "";
+      $("plot_meta").textContent = "Fields require FIELD_CFD after Run solve";
+      return;
+    }
+    empty.style.display = "none";
+    gal.style.display = "grid";
+    gal.innerHTML = "";
+    const t = Date.now();
+    let n = 0;
+    for (const name of FIELD_PLOT_NAMES) {
+      const fig = document.createElement("figure");
+      const cap = document.createElement("figcaption");
+      cap.textContent = name;
+      const img = document.createElement("img");
+      img.alt = name;
+      img.src = "/plot/" + name + "?t=" + t;
+      img.onerror = () => { fig.remove(); };
+      img.onload = () => { n += 1; };
+      fig.appendChild(cap);
+      fig.appendChild(img);
+      gal.appendChild(fig);
+    }
+    $("plot_meta").textContent = "GET /plot/… after cfd_ran";
+    // If nothing loads, show empty after a beat.
+    setTimeout(() => {
+      if (!gal.querySelector("img")) {
+        empty.style.display = "";
+        empty.textContent = "No solve yet — Run solve when OF present";
+        gal.style.display = "none";
+      }
+    }, 800);
+  }
+
+  function quietGapLine(j) {
+    if (!j) return null;
+    const notes = [].concat(j.geom_warnings || [], j.notes || []);
+    let g = null;
+    for (const n of notes) {
+      const m = String(n).match(/g_min\s*=\s*([-+0-9.eE]+)\s*mm/);
+      if (m) g = Number(m[1]);
+      if (/nested/i.test(String(n)) && g != null && g > 0) {
+        return "nested pack · g_min=" + g.toFixed(3) + " mm > 0 (legal)";
+      }
+    }
+    if (g != null) {
+      if (g <= 0) return "g_min=" + g.toFixed(3) + " mm ≤ 0 — intersecting metal";
+      return "g_min=" + g.toFixed(3) + " mm";
+    }
+    if (j.note) return String(j.note);
+    return null;
+  }
+
+  function visibleKeys() {
+    const all = (SCHEMA && SCHEMA.keys) || [];
+    return all.filter((k) => {
+      if (PACK_SLIDER_IDS.has(k.id)) return false;
+      if (group && k.group !== group) return false;
+      return true;
+    });
+  }
+
+  function paintFields() {
+    const gmeta = (SCHEMA.groups || {})[group];
+    $("group_hint").textContent = gmeta && gmeta.hint
+      ? gmeta.hint + " Number fields only — no s/σ/c/r packing slider rail."
+      : "Number fields only — no packing slider rail. Full RTS filters via Inputs.";
+    const box = $("fields");
+    box.innerHTML = "";
+    const bySg = new Map();
+    for (const k of visibleKeys()) {
+      const sg = k.subgroup || "keys";
+      if (!bySg.has(sg)) bySg.set(sg, []);
+      bySg.get(sg).push(k);
+    }
+    for (const [sg, keys] of bySg) {
+      const cap = document.createElement("p");
+      cap.className = "hint";
+      cap.style.marginTop = ".35rem";
+      cap.textContent = String(sg).replace(/_/g, " ");
+      box.appendChild(cap);
+      for (const k of keys) {
+        const d = document.createElement("div");
+        d.className = "knob " + (k.css || "");
+        d.innerHTML =
+          `<div class="knob-head"><span class="knob-label">${k.label}</span>` +
+          `<span class="knob-sym">${k.sym || ""}</span>` +
+          `<span class="knob-unit">${k.unit || ""}</span></div>` +
+          `<div class="knob-rts">RTS ${k.rts || "—"}</div>`;
+        if (k.id === "constant_passage_width") {
+          const inp = document.createElement("input");
+          inp.type = "checkbox";
+          inp.checked = !!(VALUES[k.id] === true || VALUES[k.id] === 1 || VALUES[k.id] === "true");
+          inp.addEventListener("change", () => {
+            VALUES[k.id] = !!inp.checked;
+            constantPassage = !!inp.checked;
+            refreshConstPassageBtn();
+          });
+          d.appendChild(inp);
+          box.appendChild(d);
+          continue;
+        }
+        const inp = document.createElement("input");
+        inp.type = "number";
+        inp.id = "f_" + k.id;
+        inp.step = "any";
+        inp.value = VALUES[k.id] ?? k.default ?? "";
+        inp.addEventListener("change", () => {
+          const n = Number(inp.value);
+          if (!Number.isNaN(n)) VALUES[k.id] = n;
+          paintReadout();
+        });
+        if (k.id === "passage_depth_mm") {
+          const row = document.createElement("div");
+          row.style.display = "flex";
+          row.style.gap = "0.35rem";
+          row.style.alignItems = "center";
+          inp.style.flex = "1";
+          const autoBtn = document.createElement("button");
+          autoBtn.type = "button";
+          autoBtn.id = "btn-passage-auto";
+          autoBtn.textContent = "Auto";
+          autoBtn.title = "Min dist from fillet-metal foot (or tip) to blade below";
+          autoBtn.style.flex = "0 0 auto";
+          autoBtn.addEventListener("click", () => { autoPassageDepth(); });
+          row.appendChild(inp);
+          row.appendChild(autoBtn);
+          d.appendChild(row);
+          box.appendChild(d);
+          continue;
+        }
+        d.appendChild(inp);
+        box.appendChild(d);
+      }
+    }
+    if (!box.children.length) {
+      box.innerHTML = "<p class=\"hint\">No knobs in this group.</p>";
+    }
+  }
+
+  function readValuesFromDom() {
+    for (const k of (SCHEMA.keys || [])) {
+      if (PACK_SLIDER_IDS.has(k.id)) continue;
+      const el = document.getElementById("f_" + k.id);
+      if (!el) continue;
+      const n = Number(el.value);
+      if (!Number.isNaN(n)) VALUES[k.id] = n;
+    }
+  }
+
+  function fmt(x, dig) {
+    if (x == null || Number.isNaN(Number(x))) return "—";
+    return Number(x).toExponential ? Number(x).toPrecision(dig || 4) : String(x);
+  }
+  function paintResults(j) {
+    const el = $("results_readout");
+    if (!el) return;
+    if (!j || !j.cfd_ran) {
+      el.classList.remove("has-cfd");
+      const meshBits = [];
+      if (j && j.mesh_ok != null) meshBits.push("mesh_ok=" + j.mesh_ok);
+      if (j && j.n_cells != null) meshBits.push("n_cells=" + j.n_cells);
+      if (j && (j.failed_checks != null || j.checkMesh != null)) {
+        meshBits.push("failed_checks=" + JSON.stringify(j.failed_checks != null ? j.failed_checks : j.checkMesh));
+      }
+      el.textContent = meshBits.length
+        ? ("Mesh only (no FIELD_CFD yet)\n" + meshBits.join(" · "))
+        : "No solve yet — Run mesh / Run solve. Numbers land here from /status.";
+      return;
+    }
+    el.classList.add("has-cfd");
+    const r = j.result || {};
+    const Ft = j.Ft_N != null ? j.Ft_N : r.Ft_N;
+    const Fd = j.Fd_N != null ? j.Fd_N : r.Fd_N;
+    const P = j.power_w != null ? j.power_w : r.power_w;
+    const Pof = j.of_power_w != null ? j.of_power_w : r.of_power_w;
+    const U = j.u_m_s != null ? j.u_m_s : r.u_m_s;
+    const Mw = j.Mw1 != null ? j.Mw1 : r.Mw1;
+    const MwOF = j.Mw1_OF != null ? j.Mw1_OF : r.Mw1_OF;
+    const Eu = j.euler_work_j_kg != null ? j.euler_work_j_kg : r.euler_work_j_kg;
+    const loss = j.loss_scoping || r.loss_scoping || {};
+    const Yp = loss.profile && loss.profile.Yp;
+    const flags = (r.flags) || {};
+    const lines = [
+      "FIELD_CFD · PREDICTED (not a design load)",
+      "Ft=" + fmt(Ft, 5) + " N · Fd=" + fmt(Fd, 5) + " N · U=" + fmt(U, 4) + " m/s",
+      "power Ft×U=" + fmt(P, 5) + " W · OF-station power=" + fmt(Pof, 5) + " W",
+      "Mw1=" + fmt(Mw, 4) + " · Mw1_OF=" + fmt(MwOF, 4) + " · Euler Δh0,rel=" + fmt(Eu, 5) + " J/kg",
+      "0D SCOPING Yp(AM)=" + fmt(Yp, 4) + " · " + (loss.note || "Column A only"),
+      "flags plateau=" + String(flags.force_plateau) + " wall=" + String(flags.sample_on_wall) + " newtons_trusted=" + String(flags.newtons_trusted),
+      "Fields tab → /plot/* · case under output/…/openfoam_cases/",
+    ];
+    el.textContent = lines.join("\n");
+  }
+
+  function paintReadout() {
+    const v = VALUES || {};
+    const mm = (x) => (x == null || x === "" ? "—" : Number(x).toFixed(3) + " mm");
+    const bits = [
+      "dm " + mm(v.dm_mm),
+      "c " + mm(v.chord_mm),
+      "hu " + mm(v.hu_mm),
+      "hl " + mm(v.hl_mm),
+      "LE " + mm(v.le_mm),
+      "TE " + mm(v.te_mm),
+      "Lin " + mm(v.lin_mm),
+      "Lout " + mm(v.lout_mm),
+      "Z=" + (v.Z ?? "—"),
+      "β1=" + (v.beta1_deg ?? "—") + "°",
+      "β2=" + (v.beta2_deg ?? "—") + "°",
+      "W1=" + (v.W1_m_s ?? "—") + " m/s",
+    ];
+    let cpwLine = constantPassage ? "Const passage ON · concentric walls ΔR=g_pass (hl slaved)" : "Const passage OFF";
+    if (VALUES.passage_depth_mm != null && VALUES.passage_depth_mm !== "") {
+      cpwLine += " · g_pass=" + Number(VALUES.passage_depth_mm).toFixed(3) + " mm";
+    }
+    if (lastCpw && lastCpw.after) {
+      const g = lastCpw.after;
+      cpwLine += " · g_mid=" + (1e3 * Number(g.g_mid_mean_m || 0)).toFixed(2)
+        + " mm · Dg_mid=" + (1e3 * Number(g.g_mid_range_m || 0)).toFixed(2) + " mm";
+    }
+    $("profile_readout").textContent =
+      "Central profile (PREDICTED/SCOPING)\n" + bits.join(" · ") + "\n" + cpwLine;
+  }
+
+  function applyAuth(j) {
+    if (!j) return;
+    if (j.authority) $("badge_auth").textContent = j.authority;
+    if (j.predicted != null) $("badge_pred").textContent = j.predicted ? "PREDICTED" : "PREDICTED";
+  }
+
+  function setBusy(b) {
+    inFlight = !!b;
+    $("btn-update-profile").disabled = inFlight;
+    $("btn-update-outline").disabled = inFlight;
+    $("btn-mesh").disabled = inFlight;
+    $("btn-solve").disabled = inFlight || !ofPresent;
+  }
+
+  async function autoPassageDepth() {
+    setBusy(true);
+    setStatus("Auto passage depth — fillet-foot → blade below…");
+    try {
+      readValuesFromDom();
+      const r = await fetch("/api/passage_depth/auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: VALUES }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.ok === false) throw new Error((j.measure && j.measure.reason) || j.error || ("auto HTTP " + r.status));
+      if (j.profile && j.profile.values) VALUES = { ...VALUES, ...j.profile.values };
+      if (j.passage_depth_mm != null) VALUES.passage_depth_mm = j.passage_depth_mm;
+      lastCpw = j.measure || null;
+      paintFields();
+      paintReadout();
+      const mm = VALUES.passage_depth_mm;
+      const best = j.measure && j.measure.best;
+      const where = best ? (best.end + " " + best.kind) : "";
+      setStatus(
+        "Auto g_pass=" + (mm != null ? Number(mm).toFixed(3) : "—") + " mm" + (where ? (" · " + where) : ""),
+        "ok"
+      );
+    } catch (e) {
+      setStatus(String(e.message || e), "warn");
+    } finally {
+      setBusy(false);
+      refreshSolveGate();
+    }
+  }
+
+  function refreshConstPassageBtn() {
+    const b = $("btn-const-passage");
+    if (!b) return;
+    b.classList.toggle("active", !!constantPassage);
+    b.textContent = constantPassage ? "Const. passage ON" : "Const. passage";
+  }
+
+  function refreshSolveGate() {
+    $("btn-solve").disabled = inFlight || !ofPresent;
+    $("ofnote").textContent = ofPresent
+      ? "OpenFOAM present — Run mesh / Run solve are background jobs."
+      : "OpenFOAM missing — Run solve disabled. Outline / mesh still SCOPING.";
+  }
+
+  async function loadSchemaAndProfile() {
+    const r = await fetch("/api/filters/schema");
+    if (!r.ok) throw new Error("schema " + r.status);
+    SCHEMA = await r.json();
+    VALUES = { ...(SCHEMA.defaults || {}) };
+    try {
+      const p = await fetch("/api/profile");
+      if (p.ok) {
+        const j = await p.json();
+        const vals = (j.profile && j.profile.values) || j.values || {};
+        VALUES = { ...VALUES, ...vals };
+        applyAuth(j);
+      }
+    } catch (_) {}
+    constantPassage = !!(VALUES.constant_passage_width === true || VALUES.constant_passage_width === 1 || VALUES.constant_passage_width === "true");
+    refreshConstPassageBtn();
+    paintFields();
+    paintReadout();
+  }
+
+  async function persistProfile() {
+    readValuesFromDom();
+    const r = await fetch("/api/profile/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: VALUES }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("profile HTTP " + r.status));
+    if (j.profile && j.profile.values) VALUES = { ...VALUES, ...j.profile.values };
+    lastKnobs = Object.assign({ family: "impulse_bucket" }, j.knobs || {});
+    applyAuth(j);
+    if (j.constant_passage) lastCpw = j.constant_passage;
+    if (j.profile && j.profile.values && j.profile.values.hl_mm != null) {
+      VALUES.hl_mm = j.profile.values.hl_mm;
+    }
+    constantPassage = !!(VALUES.constant_passage_width === true || VALUES.constant_passage_width === 1 || VALUES.constant_passage_width === "true");
+    refreshConstPassageBtn();
+    paintFields();
+    paintReadout();
+    return j;
+  }
+
+  async function buildKnobs() {
+    const uj = await persistProfile();
+    let knobs = Object.assign({ family: "impulse_bucket" }, uj.knobs || {});
+    try {
+      const d = await (await fetch("/defaults")).json();
+      knobs = Object.assign({}, d, knobs, { family: "impulse_bucket" });
+      delete knobs.disclaimer;
+      delete knobs.of_present;
+      delete knobs.authority;
+      if (d.of_present != null) {
+        ofPresent = !!d.of_present;
+        refreshSolveGate();
+      }
+    } catch (_) {}
+    knobs.constant_passage_width = !!constantPassage;
+    lastKnobs = knobs;
+    return knobs;
+  }
+
+  function bumpOutlineImg() {
+    $("outline").src = "/outline.png?t=" + Date.now();
+  }
+
+  function applyStatusMeshFields(j) {
+    if (!j) return;
+    if (j.cfd_ran != null) cfdRan = !!j.cfd_ran;
+    lastMeshStatus = {
+      mesh_ok: j.mesh_ok,
+      n_cells: j.n_cells,
+      failed_checks: j.failed_checks,
+      checkMesh: j.checkMesh,
+      kind: j.kind,
+      phase: j.phase,
+      mesh_available: j.mesh_available,
+    };
+    paintResults(j);
+    if (viewMode === "mesh") paintMeshMeta(lastMeshStatus);
+    if (viewMode === "fields") paintFieldsView();
+  }
+
+  async function updateOutline() {
+    const id = ++outlineSeq;
+    setBusy(true);
+    setStatus("Updating outline from central profile metal…");
+    try {
+      const knobs = await buildKnobs();
+      const r = await fetch("/outline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(knobs),
+      });
+      const j = await r.json();
+      if (id !== outlineSeq) return;
+      applyAuth(j);
+      if (!j.ok && j.ok !== undefined && j.error) throw new Error(j.error);
+      setView("outline");
+      bumpOutlineImg();
+      // Outline may also refresh body-fitted wire without OF — keep Mesh tab in sync.
+      bumpMeshImg();
+      const gap = quietGapLine(j);
+      const meta = [];
+      if (j.family) meta.push(String(j.family));
+      if (j.mesh_kind) meta.push(String(j.mesh_kind));
+      if (j.chord_m != null) meta.push("c=" + (Number(j.chord_m) * 1e3).toFixed(2) + " mm");
+      $("plot_meta").dataset.locked = "1";
+      $("plot_meta").textContent = meta.length ? meta.join(" · ") : "POST /outline → GET /outline.png";
+      if (j.noop) setStatus(j.note || "outline paused — mesh/solve owns tree", "");
+      else if (gap && /≤ 0|intersecting/i.test(gap)) setStatus(gap, "warn");
+      else setStatus(gap || "outline refreshed (SCOPING / PREDICTED)", gap ? "ok" : "");
+    } catch (e) {
+      if (id !== outlineSeq) return;
+      setStatus(String(e.message || e), "warn");
+    } finally {
+      if (id === outlineSeq) setBusy(false);
+      refreshSolveGate();
+    }
+  }
+
+  async function updateProfileOnly() {
+    setBusy(true);
+    setStatus("Writing central profile…");
+    try {
+      await persistProfile();
+      setStatus("Profile updated (not a design load).", "ok");
+    } catch (e) {
+      setStatus(String(e.message || e), "warn");
+    } finally {
+      setBusy(false);
+      refreshSolveGate();
+    }
+  }
+
+  async function postJob(path, label) {
+    setBusy(true);
+    setStatus(label + "…");
+    try {
+      const knobs = lastKnobs || await buildKnobs();
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(knobs),
+      });
+      const j = await r.json();
+      applyAuth(j);
+      if (j.error && !j.started) {
+        setStatus(String(j.error), "warn");
+        return;
+      }
+      setStatus(j.note || (j.phase ? (label + " · phase=" + j.phase) : (label + " accepted")), "");
+      if (path === "/mesh") {
+        // Switch early so the user watches the Mesh tab while the job runs.
+        setView("mesh");
+      }
+      if (path === "/solve") {
+        setView("fields");
+      }
+      if (j.started || j.phase === "meshing" || j.phase === "solving") pollStatus(path);
+    } catch (e) {
+      setStatus(String(e.message || e), "warn");
+    } finally {
+      setBusy(false);
+      refreshSolveGate();
+    }
+  }
+
+  let pollTimer = null;
+  let pollKind = null;
+  function pollStatus(kind) {
+    if (kind) pollKind = kind;
+    if (pollTimer) return;
+    pollTimer = setInterval(async () => {
+      try {
+        const j = await (await fetch("/status")).json();
+        ofPresent = !!j.of_present;
+        refreshSolveGate();
+        applyAuth(j);
+        applyStatusMeshFields(j);
+        const ph = j.phase || "idle";
+        const hb = j.heartbeat || ph;
+        if (ph === "meshing" || ph === "solving") {
+          setStatus(hb, "");
+          if (ph === "meshing") bumpMeshImg();
+        } else {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          setStatus(hb || ph, j.success ? "ok" : (ph === "error" || ph === "done-fail" ? "warn" : ""));
+          if (pollKind === "/mesh" || j.kind === "mesh") {
+            setView("mesh");
+            bumpMeshImg();
+            paintMeshMeta(lastMeshStatus);
+          } else if (pollKind === "/solve" || j.kind === "solve") {
+            cfdRan = !!j.cfd_ran;
+            setView("fields");
+            paintFieldsView();
+          }
+          pollKind = null;
+          setBusy(false);
+          refreshSolveGate();
+        }
+      } catch (_) {}
+    }, 1200);
+  }
+
+  function openInputs() {
+    const w = window.open("/filters.html", "ic35_inputs", "popup=yes,width=920,height=780");
+    if (!w) {
+      // Same-tab fallback when popups blocked.
+      window.location.href = "/filters.html";
+    }
+  }
+
+  document.querySelectorAll("#group_tabs button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#group_tabs button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      group = btn.dataset.group;
+      paintFields();
+    });
+  });
+
+  document.querySelectorAll("#view_tabs button").forEach((btn) => {
+    btn.addEventListener("click", () => { setView(btn.dataset.view); });
+  });
+
+  $("btn-inputs").addEventListener("click", openInputs);
+  $("btn-update-profile").addEventListener("click", () => { updateProfileOnly(); });
+  $("btn-update-outline").addEventListener("click", () => { updateOutline(); });
+  $("btn-const-passage").addEventListener("click", async () => {
+    constantPassage = !constantPassage;
+    VALUES.constant_passage_width = constantPassage;
+    refreshConstPassageBtn();
+    setBusy(true);
+    setStatus(constantPassage ? "Const passage ON — concentric walls ΔR=g_pass…" : "Const passage OFF");
+    try {
+      await persistProfile();
+      await updateOutline();
+      setStatus(
+        constantPassage
+          ? ("Const passage ON · g_pass=" + (VALUES.passage_depth_mm != null ? Number(VALUES.passage_depth_mm).toFixed(3) : "—") + " mm · concentric ΔR")
+          : "Const passage OFF — dual-arc free",
+        "ok"
+      );
+    } catch (e) {
+      setStatus(String(e.message || e), "warn");
+    } finally {
+      setBusy(false);
+      refreshSolveGate();
+    }
+  });
+  $("btn-mesh").addEventListener("click", () => { postJob("/mesh", "Run mesh"); });
+  $("btn-solve").addEventListener("click", () => {
+    if (!ofPresent) {
+      setStatus("OpenFOAM missing — Run solve disabled.", "warn");
+      return;
+    }
+    postJob("/solve", "Run solve");
+  });
+
+  window.addEventListener("message", async (ev) => {
+    if (!ev.data || ev.data.type !== "ic35_profile_updated") return;
+    try {
+      const vals = (ev.data.profile && ev.data.profile.values) || {};
+      VALUES = { ...VALUES, ...vals };
+      paintFields();
+      paintReadout();
+      await updateOutline();
+    } catch (e) {
+      setStatus(String(e.message || e), "warn");
+    }
+  });
+
+  (async function boot() {
+    try {
+      const st = await (await fetch("/status")).json();
+      ofPresent = !!st.of_present;
+      applyAuth(st);
+      applyStatusMeshFields(st);
+      refreshSolveGate();
+      if (st.phase === "meshing" || st.phase === "solving") {
+        setStatus(st.heartbeat || st.phase, "");
+        if (st.phase === "meshing") setView("mesh");
+        if (st.phase === "solving") setView("fields");
+        pollStatus(st.phase === "meshing" ? "/mesh" : "/solve");
+      } else if (st.cfd_ran) {
+        setView("fields");
+        paintFieldsView();
+        setStatus("last solve on disk — FIELD_CFD numbers in left rail · Fields tab for plots", "ok");
+      }
+    } catch (_) {
+      ofPresent = false;
+      refreshSolveGate();
+    }
+    try {
+      await loadSchemaAndProfile();
+      // Prefer live outline from signed profile metal over stale PNG theater.
+      await updateOutline();
+      bumpMeshImg();
+      // Re-pull /status so CFD/0D readout survives outline refresh.
+      try {
+        const st2 = await (await fetch("/status")).json();
+        ofPresent = !!st2.of_present;
+        applyAuth(st2);
+        applyStatusMeshFields(st2);
+        refreshSolveGate();
+        if (st2.cfd_ran) {
+          setStatus("FIELD_CFD on disk — rail numbers + Fields tab · Outline refreshed", "ok");
+        } else {
+          setStatus("ready — Outline | Mesh | Fields · Update outline regenerates cascade metal", "");
+        }
+      } catch (_) {}
+    } catch (e) {
+      setStatus(String(e.message || e), "warn");
+      bumpOutlineImg();
+      bumpMeshImg();
+    }
+  })();
+})();
+</script>
+</body>
+</html>

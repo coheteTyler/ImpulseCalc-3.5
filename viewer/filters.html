@@ -134,7 +134,7 @@ function paint() {
         `<div class="knob-head"><span class="knob-label">${k.label}</span>` +
         `<span class="knob-sym">${k.sym || ""}</span>` +
         `<span class="knob-unit">${k.unit || ""}</span></div>` +
-        `<div class="knob-rts">RTS ${k.rts || "—"}</div>`;
+        `<div class="knob-rts">RTS ${k.rts || "—"}${k.hint ? " · " + k.hint : ""}</div>`;
       const inp = document.createElement("input");
       inp.type = "number";
       inp.id = "f_" + k.id;

@@ -1,7 +1,9 @@
 """2D cascade metal: circular-arc foil, dual-arc impulse bucket, or points.
 
 Live 8766 / knobs metal: `impulse_bucket` — two circular arcs (outer/inner sagittas)
-plus circular LE/TE fillets. Smooth round ends. Closed CCW, no self-intersect.
+plus pointed LE/TE tips (converging straights meet at T; G1 fillet).
+Lin=Lout=0: T at dual-arc ends; fillet = offset-curve intersection (G1 to both arcs).
+Closed CCW.
 TN D-4421 MOC lives in goldman.py for later; this module does not call it.
 
 Marlin JSON (no family): circular-arc camber foil. `profile_points` is a closed
@@ -1048,32 +1050,25 @@ def live_bucket_profile(
     n_points: int = 160,
     pitch_m: float | None = None,
 ) -> list[tuple[float, float]]:
-    """One turbine section. L_in=L_out=0 → dual-arc + circular LE/TE fillets.
-    L_in/L_out>0 → pointed parallel-sided legs + round fillet caps (never flat).
-    Millimetre knobs are absolute; chord is axial length, not a zoom.
+    """One turbine section: always pointed-tip construction.
+
+    Upper/lower arcs connect to straight legs (Lin / Lout) that meet at tip T.
+    r=0 → sharp point at T; r>0 → G1 tip fillet to the walls being joined.
+    Lin=Lout≈0 → fillet via arc offset-curve intersection (G1 to both arcs).
+    Lin/Lout>0 → converging straights + `_fillet_between_straights` (G1 to stems).
+    Millimetre knobs are absolute.
     """
-    lin = float(lin_m or 0.0)
-    lout = float(lout_m or 0.0)
-    if lin <= 1e-12 and lout <= 1e-12:
-        return impulse_bucket_profile(
-            chord_m=chord_m,
-            upper_sagitta_c=upper_sagitta_c,
-            lower_sagitta_c=lower_sagitta_c,
-            le_fillet_r_c=le_fillet_r_c,
-            te_fillet_r_c=te_fillet_r_c,
-            upper_sagitta_m=upper_sagitta_m,
-            lower_sagitta_m=lower_sagitta_m,
-            le_fillet_r_m=le_fillet_r_m,
-            te_fillet_r_m=te_fillet_r_m,
-            n_points=n_points,
-            pitch_m=pitch_m,
-        )
+    # pitch_m kept for API compatibility; unused on the pointed path.
+    _ = pitch_m
+    c = max(float(chord_m), 1e-9)
+    hu = upper_sagitta_m if upper_sagitta_m not in (None, "") else float(upper_sagitta_c) * c
+    hl = lower_sagitta_m if lower_sagitta_m not in (None, "") else float(lower_sagitta_c) * c
     return pointed_bucket_profile(
-        chord_m=chord_m,
+        chord_m=c,
         beta1_metal_deg=beta1_metal_deg,
         beta2_metal_deg=beta2_metal_deg,
-        lin_m=lin,
-        lout_m=lout,
+        lin_m=float(lin_m or 0.0),
+        lout_m=float(lout_m or 0.0),
         r_tr_m=r_tr_m,
         r_main_m=r_main_m,
         t_m=t_m,
@@ -1082,10 +1077,11 @@ def live_bucket_profile(
         te_fillet_r_m=te_fillet_r_m,
         le_fillet_r_c=le_fillet_r_c,
         te_fillet_r_c=te_fillet_r_c,
-        upper_sagitta_m=upper_sagitta_m,
-        lower_sagitta_m=lower_sagitta_m,
+        upper_sagitta_m=float(hu),
+        lower_sagitta_m=float(hl),
         n=max(16, int(n_points) // 6),
     )
+
 
 
 def _tangents_to_circle(
@@ -1129,7 +1125,11 @@ def _fillet_between_straights(
     B: tuple[float, float],
     r: float,
 ) -> list[tuple[float, float]]:
-    """Points from A-side tangent to B-side, replacing T. r=0 → [T]."""
+    """G1 fillet between two converging straights TA and TB. r=0 → [T].
+
+    Offset each straight by r; intersection of those parallels is F on the
+    angle bisector. Tangency feet Pa/Pb share tangent direction with each leg.
+    """
     if r <= 1e-15:
         return [T]
     va = (A[0] - T[0], A[1] - T[1])
@@ -1142,7 +1142,7 @@ def _fillet_between_straights(
     if alpha < 1e-6 or abs(math.sin(alpha)) < 1e-9:
         return [T]
     d = r / math.tan(alpha)
-    if d > 0.90 * la or d > 0.90 * lb:
+    if d > 0.98 * la or d > 0.98 * lb:
         return [T]
     Pa = (T[0] + ua[0] * d, T[1] + ua[1] * d)
     Pb = (T[0] + ub[0] * d, T[1] + ub[1] * d)
@@ -1153,6 +1153,46 @@ def _fillet_between_straights(
     if not arc:
         return [T]
     return arc
+
+
+def _fillet_between_arcs(
+    c: float,
+    h_u: float,
+    h_l: float,
+    r: float,
+    *,
+    want_le: bool,
+) -> tuple[tuple[float, float], tuple[float, float], list[tuple[float, float]]] | None:
+    """G1 tip fillet to dual circular arcs via offset-curve intersection.
+
+    Offset the upper wall inward by r (circle R_u − r) and the lower wall outward
+    by r (circle R_l + r). Their intersection is fillet center F on the medial
+    axis; tangency points are F projected onto each arc along the shared normal
+    (Cu→F / Cl→F). That makes wall tangent ≡ fillet tangent at both feet (G1).
+    Returns (p_u, p_l, fillet_arc) or None if r=0 / no hit / r too fat.
+    """
+    if r <= 1e-15:
+        return None
+    cx_u, cy_u, R_u = _arc_circle(c, h_u)
+    cx_l, cy_l, R_l = _arc_circle(c, h_l)
+    if R_u <= r + 1e-12:
+        return None
+    hits = _circle_hits((cx_u, cy_u), R_u - r, (cx_l, cy_l), R_l + r)
+    if not hits:
+        return None
+    F = min(hits, key=lambda p: p[0]) if want_le else max(hits, key=lambda p: p[0])
+    Cu, Cl = (cx_u, cy_u), (cx_l, cy_l)
+    dxu, dyu = F[0] - Cu[0], F[1] - Cu[1]
+    Lu = math.hypot(dxu, dyu) or 1.0
+    p_u = (Cu[0] + dxu / Lu * R_u, Cu[1] + dyu / Lu * R_u)
+    dxl, dyl = F[0] - Cl[0], F[1] - Cl[1]
+    Ll = math.hypot(dxl, dyl) or 1.0
+    p_l = (Cl[0] + dxl / Ll * R_l, Cl[1] + dyl / Ll * R_l)
+    T = (0.0, 0.0) if want_le else (float(c), 0.0)
+    arc = _fillet_arc(F, r, p_u, p_l, T, 20)
+    if not arc:
+        return None
+    return p_u, p_l, arc
 
 
 def _fillet_circle_to_line(
@@ -1230,12 +1270,22 @@ def pointed_bucket_profile(
     lower_sagitta_m: float | None = None,
     n: int = 24,
 ) -> list[tuple[float, float]]:
-    """Left-side recipe (mirrored on the right): outer G1 along the C, inner trans-arc, then parallel t.
+    """Pointed C-bucket: arcs + converging straights to tip T + G1 tip fillet.
 
-    Trim where gap = t. Outer straight follows the outer-arc tangent (original path).
-    Inner wall uses R_tr to that heading, then runs parallel (constant width).
-    t/2 nose at the end. ψ is extra splay off that tangent, default 0.
+    Law:
+      1. Upper/lower walls connect to straight legs of length Lin (LE) / Lout (TE).
+      2. Those two straights meet at a single tip point T (not a flat bar).
+      3. r=0 → sharp T; r>0 → fillet center on the medial axis between the walls
+         (offset curves by r); tangency feet are G1 to the walls being joined.
+      4. Lin=Lout≈0: walls are the dual arcs → `_fillet_between_arcs` (offset
+         circle intersection). Lin/Lout>0: walls are the stems →
+         `_fillet_between_straights` (angle-bisector / parallel offsets).
+      5. ψ (`psi_tr_deg`) splays the outer stem off the outer-arc tangent; default 0
+         follows the metal / outer tangent.
+
+    Lin=Lout=0: T is the dual-arc endpoint; fillet blends into both arcs with G1.
     """
+    _ = (beta1_metal_deg, beta2_metal_deg, r_tr_m, r_main_m)  # knobs reserved / outer API
     c = max(float(chord_m), 1e-9)
     L_in = max(float(lin_m), 0.0)
     L_out = max(float(lout_m), 0.0)
@@ -1253,22 +1303,20 @@ def pointed_bucket_profile(
         thick = max(float(t_m), 1e-6)
     else:
         thick = max(0.5 * (h_u - h_l), 1e-6)
-    g_tgt = min(thick, 0.90 * (h_u - h_l))
-    if r_tr_m not in (None, ""):
-        R_tr = max(float(r_tr_m), 1e-6)
-    else:
-        R_tr = 0.002
-    if r_main_m not in (None, ""):
-        R_inner = max(float(r_main_m), 1e-6)
-    else:
-        R_inner = 0.006
-    R_inner = min(R_inner, 0.006)
     psi = float(psi_tr_deg) if psi_tr_deg not in (None, "") else 0.0
     nn = max(int(n), 16)
     n_arc = max(nn * 6, 96)
     upper = circular_arc_le_te(c, h_u, n_arc)
     lower = circular_arc_le_te(c, h_l, n_arc)
-    Cl = _arc_circle(c, h_l)
+
+    if le_fillet_r_m not in (None, ""):
+        r_le = max(float(le_fillet_r_m), 0.0)
+    else:
+        r_le = max(float(le_fillet_r_c) * c, 0.0)
+    if te_fillet_r_m not in (None, ""):
+        r_te = max(float(te_fillet_r_m), 0.0)
+    else:
+        r_te = max(float(te_fillet_r_c) * c, 0.0)
 
     def _wrap(a: float) -> float:
         while a <= -math.pi:
@@ -1291,7 +1339,24 @@ def pointed_bucket_profile(
                 return y0 + tt * (y1 - y0), i
         return pts[-1][1], len(pts) - 2
 
-    def _mouth_x(want_le: bool) -> float:
+    def _nu(v):
+        L = math.hypot(v[0], v[1]) or 1.0
+        return (v[0] / L, v[1] / L)
+
+    def _along_wall(pts, from_le: bool, dist: float) -> tuple[float, float]:
+        """Point at arc-length `dist` from the tip end along the wall into the body."""
+        seq = pts if from_le else list(reversed(pts))
+        acc = 0.0
+        for i in range(len(seq) - 1):
+            dseg = math.hypot(seq[i + 1][0] - seq[i][0], seq[i + 1][1] - seq[i][1])
+            if acc + dseg >= dist:
+                tt = (dist - acc) / max(dseg, 1e-15)
+                p0, p1 = seq[i], seq[i + 1]
+                return (p0[0] + tt * (p1[0] - p0[0]), p0[1] + tt * (p1[1] - p0[1]))
+            acc += dseg
+        return seq[-1]
+
+    def _mouth_x(want_le: bool, g_tgt: float) -> float:
         xs = [p[0] for p in upper]
         xmin, xmax = min(xs), max(xs)
         if want_le:
@@ -1299,7 +1364,7 @@ def pointed_bucket_profile(
         else:
             lo, hi = 0.5 * (xmin + xmax), xmax - 1e-9
         hit = hi if want_le else lo
-        for _ in range(40):
+        for _ in range(48):
             mid = 0.5 * (lo + hi)
             yu, _ = _y_at_x(upper, mid)
             yl, _ = _y_at_x(lower, mid)
@@ -1316,181 +1381,198 @@ def pointed_bucket_profile(
                     hi = mid
         return hit
 
-    def _arc_to(pts, p, h, R, h_tgt, other):
-        dpsi = _wrap(h_tgt - h)
-        if abs(dpsi) < 1e-5:
-            return p, h
-        Cplus = (p[0] + R * math.cos(h + math.pi / 2.0), p[1] + R * math.sin(h + math.pi / 2.0))
-        Cminus = (p[0] + R * math.cos(h - math.pi / 2.0), p[1] + R * math.sin(h - math.pi / 2.0))
-        ox, oy = other[0] - p[0], other[1] - p[1]
-        def _dot(C):
-            return (C[0] - p[0]) * ox + (C[1] - p[1]) * oy
-        s = 1.0 if _dot(Cplus) < _dot(Cminus) else -1.0
-        d_forced = dpsi
-        if s > 0 and d_forced < 0:
-            d_forced += 2.0 * math.pi
-        elif s < 0 and d_forced > 0:
-            d_forced -= 2.0 * math.pi
-        if abs(d_forced) <= math.pi + 1e-6:
-            dpsi = d_forced
-            s_use = s
-        else:
-            s_use = 1.0 if dpsi > 0 else -1.0
-        left = h + s_use * math.pi / 2.0
-        C = (p[0] + R * math.cos(left), p[1] + R * math.sin(left))
-        a0 = math.atan2(p[1] - C[1], p[0] - C[0])
-        a1 = a0 + dpsi
-        ns = max(int(nn * abs(dpsi) / (math.pi / 4.0)), 8)
-        for i in range(1, ns + 1):
-            a = a0 + (a1 - a0) * i / ns
-            pts.append((C[0] + R * math.cos(a), C[1] + R * math.sin(a)))
-        return pts[-1], h_tgt
-
-    def _straight(pts, p, h, L, nseg=12):
-        if L <= 1e-12:
-            return p, h
-        ex = p[0] + L * math.cos(h)
-        ey = p[1] + L * math.sin(h)
+    def _seg(a, b, nseg: int = 10) -> list[tuple[float, float]]:
+        if math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-15:
+            return []
+        out = []
         for i in range(1, nseg + 1):
             tt = i / nseg
-            pts.append((p[0] + tt * (ex - p[0]), p[1] + tt * (ey - p[1])))
-        return (ex, ey), h
+            out.append((a[0] + tt * (b[0] - a[0]), a[1] + tt * (b[1] - a[1])))
+        return out
 
-    def _cap(u, l, h, r_fillet: float):
-        """Nose: r=0 is a point; r>0 is a circular cap of that radius, G1 to the walls.
+    def _end(want_le: bool, L: float, r: float):
+        """Converging tip at one end. Returns (u_stem, fillet_u_to_l, l_stem_rev_ready).
 
-        Parallel stems at thickness t only admit a tangent circle of r ≤ t/2.
-        Smaller r tapers the last bit; r=0 is a cusp. Never a t/2 dummy.
+        u_stem: from arc join toward fillet (exclusive of fillet start if duplicated).
+        fillet: Pa_u → … → Pb_l (r=0 → [T]).
+        Arc join x used to trim the mid arcs.
         """
-        tloc = math.hypot(u[0] - l[0], u[1] - l[1])
-        if tloc < 1e-12:
-            return []
-        ux = (u[0] - l[0]) / tloc
-        uy = (u[1] - l[1]) / tloc
-        mx, my = 0.5 * (u[0] + l[0]), 0.5 * (u[1] + l[1])
-        hx, hy = math.cos(h), math.sin(h)
-        r = max(float(r_fillet), 0.0)
-        half = 0.5 * tloc
-        if r < 1e-7:
-            apex = (mx + 0.12 * tloc * hx, my + 0.12 * tloc * hy)
-            return [apex]
-        r_use = min(r, half - 1e-9)
-        shrink = half - r_use
-        u2 = (u[0] - ux * shrink + shrink * hx, u[1] - uy * shrink + shrink * hy)
-        l2 = (l[0] + ux * shrink + shrink * hx, l[1] + uy * shrink + shrink * hy)
-        mx2, my2 = 0.5 * (u2[0] + l2[0]), 0.5 * (u2[1] + l2[1])
-        a0 = math.atan2(u2[1] - my2, u2[0] - mx2)
-        a1 = math.atan2(l2[1] - my2, l2[0] - mx2)
-        da = _wrap(a1 - a0)
-        mid = a0 + 0.5 * da
-        through = (mx2 + r_use * math.cos(mid), my2 + r_use * math.sin(mid))
-        prefer = (mx2 + r_use * hx, my2 + r_use * hy)
-        if (through[0] - mx2) * (prefer[0] - mx2) + (through[1] - my2) * (prefer[1] - my2) < 0:
-            da = da - 2.0 * math.pi if da > 0 else da + 2.0 * math.pi
-        ncap = max(10, int(12 * max(r_use / max(half, 1e-9), 0.35)))
-        arc = [
-            (mx2 + r_use * math.cos(a0 + da * i / ncap), my2 + r_use * math.sin(a0 + da * i / ncap))
-            for i in range(0, ncap + 1)
-        ]
-        return arc
-
-    x_le = _mouth_x(True)
-    x_te = _mouth_x(False)
-    yu_le, iu_le = _y_at_x(upper, x_le)
-    yl_le, il_le = _y_at_x(lower, x_le)
-    yu_te, iu_te = _y_at_x(upper, x_te)
-    yl_te, il_te = _y_at_x(lower, x_te)
-    pu_le, pl_le = (x_le, yu_le), (x_le, yl_le)
-    pu_te, pl_te = (x_te, yu_te), (x_te, yl_te)
-    u_mid = [pu_le] + [p for p in upper if x_le < p[0] < x_te] + [pu_te]
-    l_mid = [pl_le] + [p for p in lower if x_le < p[0] < x_te] + [pl_te]
-
-    # outer tangent at the mouth (toward the tip)
-    h_u_le = _hdg(u_mid[1], u_mid[0]) if len(u_mid) > 1 else -math.pi / 2.0
-    h_l_le = _hdg(l_mid[1], l_mid[0]) if len(l_mid) > 1 else -math.pi / 2.0
-    h_u_te = _hdg(u_mid[-2], u_mid[-1]) if len(u_mid) > 1 else -math.pi / 2.0
-    h_l_te = _hdg(l_mid[-2], l_mid[-1]) if len(l_mid) > 1 else -math.pi / 2.0
-    # extra splay off the outer path; 0 follows the C
-    h_stem_le = h_u_le - math.radians(psi)
-    h_stem_te = h_u_te + math.radians(psi)
-
-    def _inner_start(want_le: bool):
-        # leave the inner C further inboard so the trans arc can be large
-        x_join = min(0.28 * c, 0.5 * (x_le + x_te))
+        T0 = (0.0, 0.0) if want_le else (c, 0.0)
         if want_le:
-            x = max(x_le + 0.08 * c, min(x_join, 0.32 * c))
+            uu = _nu((upper[1][0] - upper[0][0], upper[1][1] - upper[0][1]))
+            ul = _nu((lower[1][0] - lower[0][0], lower[1][1] - lower[0][1]))
         else:
-            x = min(x_te - 0.08 * c, max(c - x_join, 0.68 * c))
-        y, _ = _y_at_x(lower, x)
-        return (x, y)
+            uu = _nu((upper[-2][0] - upper[-1][0], upper[-2][1] - upper[-1][1]))
+            ul = _nu((lower[-2][0] - lower[-1][0], lower[-2][1] - lower[-1][1]))
 
-    def _side(pu, pl, h_outer, h_inner, h_stem, L, want_le: bool):
-        u_extra: list[tuple[float, float]] = []
-        l_extra: list[tuple[float, float]] = []
-        if abs(_wrap(h_stem - h_outer)) > math.radians(2.0):
-            _arc_to(u_extra, pu, h_outer, R_tr, h_stem, pl)
-        _straight(u_extra, u_extra[-1] if u_extra else pu, h_stem, L)
-        p_in = _inner_start(want_le)
-        # heading of inner C at p_in, toward the tip
+        # Sub-0.05 mm stems are numerically zero-length: tip at dual-arc end.
+        # Fillet must be G1 to the *arcs* (not to phantom tangent straights):
+        # intersect offset curves by r → F; project F to each wall for feet.
+        if L <= 5e-5:
+            T = T0
+            if r <= 1e-15:
+                return {
+                    "T": T,
+                    "join_u": T,
+                    "join_l": T,
+                    "u_stem": [],
+                    "fillet": [T],
+                    "l_stem": [],
+                }
+            got = _fillet_between_arcs(c, h_u, h_l, r, want_le=want_le)
+            if got is not None:
+                Pa, Pb, fillet = got
+                return {
+                    "T": T,
+                    "join_u": Pa,
+                    "join_l": Pb,
+                    "u_stem": [],
+                    "fillet": fillet,
+                    "l_stem": [],
+                }
+            # Rare fallback if r too fat for offset hits: tangent-leg bisector.
+            dot = max(-1.0, min(1.0, uu[0] * ul[0] + uu[1] * ul[1]))
+            alpha = 0.5 * math.acos(dot)
+            d_need = (r / math.tan(alpha)) if alpha > 1e-6 else 0.0
+            span = max(d_need / 0.85, 3.0 * max(r, 1e-6), 0.15 * (h_u - h_l), 5e-4)
+            span = min(span, 0.45 * c)
+            Au_v = (T[0] + uu[0] * span, T[1] + uu[1] * span)
+            Al_v = (T[0] + ul[0] * span, T[1] + ul[1] * span)
+            fillet = _fillet_between_straights(T, Au_v, Al_v, r)
+            if not fillet:
+                fillet = [T]
+            Pa, Pb = fillet[0], fillet[-1]
+            join_u = min(upper, key=lambda p: (p[0] - Pa[0]) ** 2 + (p[1] - Pa[1]) ** 2)
+            join_l = min(lower, key=lambda p: (p[0] - Pb[0]) ** 2 + (p[1] - Pb[1]) ** 2)
+            return {
+                "T": T,
+                "join_u": join_u,
+                "join_l": join_l,
+                "u_stem": _seg(join_u, Pa, 6),
+                "fillet": fillet,
+                "l_stem": _seg(Pb, join_l, 6),
+            }
+
+        # L > 0: outer stem along (outer tangent ± ψ) length L → T.
+        # Inner stem meets T at the natural dual-arc tip angle (not a parallel bar).
+        g_tgt = min(thick, 0.90 * (h_u - h_l))
+        g_tgt = min(g_tgt, max(1e-7, 1.55 * L))
+        x_m = _mouth_x(want_le, g_tgt)
+        yu, _ = _y_at_x(upper, x_m)
+        pu = (x_m, yu)
+
         if want_le:
-            h_in = _hdg((p_in[0] + 1e-4, _y_at_x(lower, p_in[0] + 1e-4)[0]), p_in)
+            h_outer = _hdg((x_m + 1e-5, _y_at_x(upper, x_m + 1e-5)[0]), pu)
+            h_stem = h_outer - math.radians(psi)
         else:
-            h_in = _hdg((p_in[0] - 1e-4, _y_at_x(lower, p_in[0] - 1e-4)[0]), p_in)
-        # large trans; center away from outer = below, cuts inside the red kink
-        R_use = min(R_inner, max(0.003, 0.9 * (L + 0.004)))
-        dpsi = _wrap(h_stem - h_in)
-        if abs(dpsi) > 1e-5:
-            s = 1.0 if dpsi > 0.0 else -1.0
-            left = h_in + s * math.pi / 2.0
-            Cfil = (p_in[0] + R_use * math.cos(left), p_in[1] + R_use * math.sin(left))
-            a0 = math.atan2(p_in[1] - Cfil[1], p_in[0] - Cfil[0])
-            a1 = a0 + dpsi
-            ns = max(int(nn * abs(dpsi) / (math.pi / 4.0)), 10)
-            for i in range(1, ns + 1):
-                a = a0 + (a1 - a0) * i / ns
-                l_extra.append((Cfil[0] + R_use * math.cos(a), Cfil[1] + R_use * math.sin(a)))
-            p_line = l_extra[-1]
+            h_outer = _hdg((x_m - 1e-5, _y_at_x(upper, x_m - 1e-5)[0]), pu)
+            h_stem = h_outer + math.radians(psi)
+
+        T = (pu[0] + L * math.cos(h_stem), pu[1] + L * math.sin(h_stem))
+
+        # Pick pl on the lower arc (same end half) that opens the tip angle as much
+        # as geometry allows, so the bisector fillet does not eat the whole stem.
+        va0 = _nu((pu[0] - T[0], pu[1] - T[1]))
+        # Keep pl away from the dual-arc tip (0 or c) and near the mouth half.
+        if want_le:
+            x_lo, x_hi = max(x_m * 0.5, 0.02 * c), min(0.40 * c, x_m + 0.20 * c)
         else:
-            p_line = p_in
-        if u_extra:
-            tip_u = u_extra[-1]
-            s_need = (tip_u[0] - p_line[0]) * math.cos(h_stem) + (tip_u[1] - p_line[1]) * math.sin(h_stem)
-            _straight(l_extra, p_line, h_stem, max(s_need, 0.0))
-        elif L > 1e-12:
-            _straight(l_extra, p_line, h_stem, L)
-        return u_extra, l_extra, p_in
+            x_lo, x_hi = max(0.60 * c, x_m - 0.20 * c), min(c - 0.02 * c, x_m + 0.5 * (c - x_m))
+        if x_hi <= x_lo + 1e-9:
+            x_lo, x_hi = (0.05 * c, 0.35 * c) if want_le else (0.65 * c, 0.95 * c)
+        best = None
+        for i in range(0, 61):
+            x = x_lo + (x_hi - x_lo) * i / 60.0
+            yl, _ = _y_at_x(lower, x)
+            cand = (x, yl)
+            vb = (cand[0] - T[0], cand[1] - T[1])
+            lb = math.hypot(vb[0], vb[1])
+            if lb < 0.25 * L:
+                continue
+            ub = (vb[0] / lb, vb[1] / lb)
+            cross = va0[0] * ub[1] - va0[1] * ub[0]
+            # Lower wall is clockwise from outer-into-body at LE (opening to -x).
+            if want_le and cross > 0.0:
+                continue
+            if (not want_le) and cross < 0.0:
+                continue
+            dot = max(-1.0, min(1.0, va0[0] * ub[0] + va0[1] * ub[1]))
+            ang = math.acos(dot)
+            # Prefer wider tip, but keep pl from marching too far mid-chord.
+            score = ang - 0.15 * abs(x - x_m) / max(c, 1e-9)
+            if best is None or score > best[0]:
+                best = (score, ang, cand)
+        if best is None:
+            yl, _ = _y_at_x(lower, x_m)
+            pl = (x_m, yl)
+        else:
+            pl = best[2]
 
-    u_left, l_left, pc_le = _side(pu_le, pl_le, h_u_le, h_l_le, h_stem_le, L_in, True)
-    u_right, l_right, pc_te = _side(pu_te, pl_te, h_u_te, h_l_te, h_stem_te, L_out, False)
-    if pc_le is not None and pc_te is not None and pc_te[0] > pc_le[0] + 1e-6:
-        l_mid = [pc_le] + [p for p in lower if pc_le[0] < p[0] < pc_te[0]] + [pc_te]
+        va = _nu((pu[0] - T[0], pu[1] - T[1]))
+        vb = _nu((pl[0] - T[0], pl[1] - T[1]))
+        dot = max(-1.0, min(1.0, va[0] * vb[0] + va[1] * vb[1]))
+        alpha = 0.5 * math.acos(dot)
+        r_use = r
+        if r > 1e-15 and alpha > 1e-6:
+            L_short = min(
+                math.hypot(pu[0] - T[0], pu[1] - T[1]),
+                math.hypot(pl[0] - T[0], pl[1] - T[1]),
+            )
+            r_max = 0.85 * L_short * math.tan(alpha)
+            r_use = min(r, max(r_max, 0.0))
+        fillet = _fillet_between_straights(T, pu, pl, r_use)
+        if r_use <= 1e-15:
+            fillet = [T]
+        Pa, Pb = fillet[0], fillet[-1]
+        return {
+            "T": T,
+            "join_u": pu,
+            "join_l": pl,
+            "u_stem": _seg(pu, Pa, max(8, nn // 2)),
+            "fillet": fillet,
+            "l_stem": _seg(Pb, pl, max(8, nn // 2)),
+        }
 
-    if le_fillet_r_m not in (None, ""):
-        r_le = max(float(le_fillet_r_m), 0.0)
-    else:
-        r_le = max(float(le_fillet_r_c) * c, 0.0)
-    if te_fillet_r_m not in (None, ""):
-        r_te = max(float(te_fillet_r_m), 0.0)
-    else:
-        r_te = max(float(te_fillet_r_c) * c, 0.0)
+    le = _end(True, L_in, r_le)
+    te = _end(False, L_out, r_te)
 
-    u_tip_le = u_left[-1] if u_left else pu_le
-    l_tip_le = l_left[-1] if l_left else pl_le
-    u_tip_te = u_right[-1] if u_right else pu_te
-    l_tip_te = l_right[-1] if l_right else pl_te
-    te_cap = _cap(u_tip_te, l_tip_te, h_stem_te, r_te)
-    le_cap = _cap(l_tip_le, u_tip_le, h_stem_le, r_le)
+    # Mid arcs between the LE/TE joins (exclusive of joins; stems/fillets own the ends).
+    xu0, xu1 = le["join_u"][0], te["join_u"][0]
+    xl0, xl1 = le["join_l"][0], te["join_l"][0]
+    u_mid = [p for p in upper if xu0 < p[0] < xu1]
+    l_mid = [p for p in lower if xl0 < p[0] < xl1]
 
-    poly: list[tuple[float, float]] = []
-    poly.extend(reversed(u_left))
+    # CCW: Pa_le → (stem) join_u → u_mid → join_u_te → stem → TE fillet →
+    #       stem → l_mid → join_l_le → stem → LE fillet (lower→upper).
+    le_fillet_close = list(reversed(le["fillet"]))
+    te_fillet = te["fillet"]
+    Pa_le = le["fillet"][0]
+    Pb_le = le["fillet"][-1]
+    Pa_te = te["fillet"][0]
+
+    poly: list[tuple[float, float]] = [Pa_le]
+    if le["u_stem"]:
+        poly.extend(reversed(le["u_stem"][:-1]))
+    poly.append(le["join_u"])
     poly.extend(u_mid)
-    poly.extend(u_right)
-    poly.extend(te_cap)
-    poly.extend(reversed(l_right))
-    poly.extend(reversed(l_mid[1:-1]))
-    poly.append(l_mid[0])
-    poly.extend(l_left)
-    poly.extend(le_cap)
+    poly.append(te["join_u"])
+    poly.extend(te["u_stem"])
+    if not poly or math.hypot(poly[-1][0] - Pa_te[0], poly[-1][1] - Pa_te[1]) > 1e-12:
+        poly.append(Pa_te)
+    poly.extend(te_fillet[1:])
+    if te["l_stem"]:
+        poly.extend(te["l_stem"])
+    else:
+        poly.append(te["join_l"])
+    poly.extend(reversed(l_mid))
+    poly.append(le["join_l"])
+    if le["l_stem"]:
+        poly.extend(reversed(le["l_stem"][:-1]))
+        poly.append(Pb_le)
+    else:
+        poly.append(Pb_le)
+    poly.extend(le_fillet_close[1:])
+
     cleaned: list[tuple[float, float]] = []
     for q in poly:
         if not cleaned or math.hypot(q[0] - cleaned[-1][0], q[1] - cleaned[-1][1]) > 1e-12:
@@ -1504,3 +1586,519 @@ def pointed_bucket_profile(
         raise RuntimeError("pointed bucket is self-intersecting")
     poly[-1] = poly[0]
     return poly
+
+
+def _passage_gap_metrics(poly: list[tuple[float, float]], pitch_m: float) -> dict[str, float]:
+    pg = passage_gap(poly, pitch_m)
+    g = pg["g"]
+    x = pg["ss"][:, 0]
+    x0, x1 = float(x.min()), float(x.max())
+    mid = (x >= x0 + 0.2 * (x1 - x0)) & (x <= x1 - 0.2 * (x1 - x0))
+    gm = g[mid] if bool(mid.any()) else g
+    return {
+        "g_min_m": float(pg["g_min"]),
+        "g_max_m": float(np.max(g)),
+        "g_mean_m": float(np.mean(g)),
+        "g_range_m": float(np.max(g) - np.min(g)),
+        "g_std_m": float(np.std(g)),
+        "g_mid_mean_m": float(np.mean(gm)),
+        "g_mid_range_m": float(np.max(gm) - np.min(gm)),
+        "g_mid_std_m": float(np.std(gm)),
+        "intersecting": bool(pg["intersecting"]),
+    }
+
+
+def concentric_passage_from_pitch(
+    chord_m: float, upper_sagitta_m: float, pitch_m: float
+) -> dict[str, Any]:
+    """Goldman concentric dual-arc: lower center = upper center − pitch ŷ.
+
+    Facing walls (this SS, neighbor PS) share a center in the cascade frame,
+    so wall-normal gap ΔR = R_l − R_u is constant on the arcs. Dual-arc still
+    through LE(0,0)/TE(c,0). hl is the slave. hu, pitch, fillets stay free.
+    """
+    c = max(float(chord_m), 1e-9)
+    hu = max(float(upper_sagitta_m), 1e-9)
+    pitch = float(pitch_m)
+    if pitch <= 1e-9:
+        return {"ok": False, "reason": "pitch_m must be > 0", "slave": "hl"}
+    _cx, cy_u, Ru = _arc_circle(c, hu)
+    cy_l = cy_u - pitch
+    Rl = math.hypot(0.5 * c, cy_l)
+    hl = cy_l + Rl
+    g = Rl - Ru
+    if not math.isfinite(hl) or hl <= 1e-9:
+        return {
+            "ok": False,
+            "reason": "concentric hl not positive",
+            "hl_m": hl,
+            "hu_m": hu,
+            "pitch_m": pitch,
+            "slave": "hl",
+        }
+    if hl >= hu - 1e-9:
+        return {
+            "ok": False,
+            "reason": f"concentric hl={hl*1e3:.3f} mm >= hu={hu*1e3:.3f} mm (metal inverted)",
+            "hl_m": hl,
+            "hu_m": hu,
+            "pitch_m": pitch,
+            "slave": "hl",
+        }
+    if g <= 1e-9:
+        return {
+            "ok": False,
+            "reason": "concentric ΔR <= 0",
+            "hl_m": hl,
+            "hu_m": hu,
+            "pitch_m": pitch,
+            "passage_depth_m": g,
+            "slave": "hl",
+        }
+    return {
+        "ok": True,
+        "hl_m": float(hl),
+        "hl_mm": float(hl) * 1e3,
+        "hu_m": float(hu),
+        "hu_mm": float(hu) * 1e3,
+        "pitch_m": float(pitch),
+        "pitch_mm": float(pitch) * 1e3,
+        "Ru_m": float(Ru),
+        "Rl_m": float(Rl),
+        "passage_depth_m": float(g),
+        "passage_depth_mm": float(g) * 1e3,
+        "cy_u": float(cy_u),
+        "cy_l": float(cy_l),
+        "slave": "hl",
+        "note": (
+            "Const.passage: concentric walls (Cl = Cu − pitch ŷ). "
+            "ΔR = R_l−R_u is wall-normal g_pass on the arcs. hl slaved."
+        ),
+    }
+
+
+def concentric_passage_from_gap(
+    chord_m: float, upper_sagitta_m: float, gap_m: float
+) -> dict[str, Any]:
+    """Pick pitch, then hl, so concentric ΔR = gap_m."""
+    c = max(float(chord_m), 1e-9)
+    hu = max(float(upper_sagitta_m), 1e-9)
+    g = float(gap_m)
+    if g <= 1e-9:
+        return {"ok": False, "reason": "gap_m must be > 0", "slave": "pitch+hl"}
+    _cx, cy_u, Ru = _arc_circle(c, hu)
+    need = (Ru + g) ** 2 - (0.5 * c) ** 2
+    if need <= 1e-16:
+        return {
+            "ok": False,
+            "reason": "g_pass too small for this chord/hu (Ru+g < c/2)",
+            "slave": "pitch+hl",
+            "target_m": g,
+        }
+    cy_l = -math.sqrt(need)
+    pitch = cy_u - cy_l
+    if pitch <= 1e-9:
+        return {
+            "ok": False,
+            "reason": "solved pitch <= 0 for that g_pass",
+            "slave": "pitch+hl",
+            "target_m": g,
+        }
+    out = concentric_passage_from_pitch(c, hu, pitch)
+    out["slave"] = "pitch+hl"
+    out["target_m"] = g
+    out["target_mm"] = g * 1e3
+    if out.get("ok"):
+        out["note"] = (
+            "Const.passage: concentric walls, pitch+hl slaved so ΔR = g_pass. "
+            "hu/fillets/Lin/Lout stay free."
+        )
+    return out
+
+
+def solve_hl_constant_passage(
+    job: dict[str, Any],
+    *,
+    pitch_m: float | None = None,
+    n_scan: int = 48,
+) -> dict[str, Any]:
+    """Slave hl so facing walls are Goldman concentric. n_scan kept for API."""
+    _ = n_scan
+    from .job import pitch_m as cascade_pitch_m
+
+    job2 = dict(job)
+    job2["geometry"] = dict(job.get("geometry") or {})
+    g = job2["geometry"]
+    pitch = float(pitch_m if pitch_m is not None else cascade_pitch_m(job2))
+    hu = float(g.get("upper_sagitta_m") or ((g.get("hu_mm") or 0) * 1e-3) or 0.005)
+    c = float(g.get("chord_m") or 0.014)
+    hl0 = float(g.get("lower_sagitta_m") or ((g.get("hl_mm") or 0) * 1e-3) or 0.4 * hu)
+    before = None
+    try:
+        gg = dict(g)
+        j = dict(job2)
+        j["geometry"] = gg
+        spec = spec_from_job(j)
+        try:
+            poly = profile_from_job(j, spec)
+        except Exception:
+            poly, _notes = safe_profile_from_job(j, spec)
+        poly_c = center_in_pitch(poly, pitch)
+        if isinstance(poly_c, tuple):
+            poly_c = poly_c[0]
+        before = _passage_gap_metrics(list(poly_c), pitch)
+        before["hl_m"] = hl0
+    except Exception:
+        before = {"hl_m": hl0}
+    solved = concentric_passage_from_pitch(c, hu, pitch)
+    if not solved.get("ok"):
+        solved["before"] = before
+        solved["after"] = before
+        solved["hu_m"] = hu
+        solved["pitch_m"] = pitch
+        return solved
+    try:
+        gg = dict(g)
+        gg["lower_sagitta_m"] = float(solved["hl_m"])
+        gg.pop("hl_mm", None)
+        j = dict(job2)
+        j["geometry"] = gg
+        spec = spec_from_job(j)
+        try:
+            poly = profile_from_job(j, spec)
+        except Exception:
+            poly, _notes = safe_profile_from_job(j, spec)
+        poly_c = center_in_pitch(poly, pitch)
+        if isinstance(poly_c, tuple):
+            poly_c = poly_c[0]
+        after = _passage_gap_metrics(list(poly_c), pitch)
+        after["hl_m"] = float(solved["hl_m"])
+    except Exception as exc:
+        after = {"hl_m": float(solved["hl_m"]), "error": str(exc)}
+    solved["before"] = before
+    solved["after"] = after
+    return solved
+
+
+def apply_constant_passage_width(job: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebuild facing walls as Goldman concentric (ΔR = g_pass).
+
+    Dual-arc C: Cl = Cu − pitch ŷ, hl slaved. If geometry.passage_depth_m is
+    set, also slave pitch so ΔR matches that target. hu/fillets/Lin/Lout free.
+    If no target yet, Auto-measure current fillet-foot clearance and store it,
+    then concentric-at-current-pitch (hl only).
+    """
+    from .job import pitch_m as cascade_pitch_m
+
+    g = job.setdefault("geometry", {})
+    c = float(g.get("chord_m") or 0.014)
+    hu = float(g.get("upper_sagitta_m") or ((g.get("hu_mm") or 0) * 1e-3) or 0.005)
+    target = g.get("passage_depth_m")
+    if target in (None, "") and g.get("passage_depth_mm") not in (None, ""):
+        target = float(g["passage_depth_mm"]) * 1e-3
+    if target in (None, ""):
+        meas = measure_fillet_foot_clearance(job)
+        if meas.get("ok"):
+            target = float(meas["passage_depth_m"])
+            g["passage_depth_m"] = target
+        else:
+            # No Auto number: concentric at current pitch, report ΔR.
+            pitch = float(cascade_pitch_m(job))
+            report = solve_hl_constant_passage(job, pitch_m=pitch)
+            if report.get("ok"):
+                g["lower_sagitta_m"] = float(report["hl_m"])
+                g["hl_mm"] = float(report["hl_mm"])
+                g["passage_depth_m"] = float(report["passage_depth_m"])
+                g["constant_passage_width"] = True
+            report["enabled"] = True
+            return job, report
+
+    report = concentric_passage_from_gap(c, hu, float(target))
+    if not report.get("ok"):
+        # Fall back: keep pitch, slave hl only (ΔR will not match target).
+        pitch = float(cascade_pitch_m(job))
+        fallback = solve_hl_constant_passage(job, pitch_m=pitch)
+        fallback["enabled"] = True
+        fallback["target_m"] = float(target)
+        fallback["reason"] = (report.get("reason") or "") + " — fell back to hl-only concentric"
+        if fallback.get("ok"):
+            g["lower_sagitta_m"] = float(fallback["hl_m"])
+            g["hl_mm"] = float(fallback["hl_mm"])
+            g["passage_depth_m"] = float(fallback["passage_depth_m"])
+            g["constant_passage_width"] = True
+        return job, fallback
+
+    pitch0 = float(cascade_pitch_m(job))
+    before_pack = solve_hl_constant_passage(job, pitch_m=pitch0)
+    g["pitch_m"] = float(report["pitch_m"])
+    g["packing_driver"] = "pitch"
+    g["lower_sagitta_m"] = float(report["hl_m"])
+    g["hl_mm"] = float(report["hl_mm"])
+    g["passage_depth_m"] = float(report["passage_depth_m"])
+    g["constant_passage_width"] = True
+    after_pack = solve_hl_constant_passage(job, pitch_m=float(report["pitch_m"]))
+    report["before"] = before_pack.get("before")
+    report["after"] = after_pack.get("after")
+    report["enabled"] = True
+    return job, report
+
+
+def _dist_point_to_segment(
+    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    abx, aby = bx - ax, by - ay
+    L2 = abx * abx + aby * aby
+    if L2 < 1e-30:
+        return math.hypot(px - ax, py - ay)
+    tt = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / L2))
+    qx, qy = ax + tt * abx, ay + tt * aby
+    return math.hypot(px - qx, py - qy)
+
+
+def min_distance_point_to_poly(p: tuple[float, float], poly: list[tuple[float, float]]) -> float:
+    """Shortest distance from point to closed/open polyline (secant min)."""
+    if not poly:
+        return float("inf")
+    pts = list(poly)
+    if len(pts) >= 2 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    best = float("inf")
+    n = len(pts)
+    for i in range(n):
+        d = _dist_point_to_segment(p, pts[i], pts[(i + 1) % n])
+        if d < best:
+            best = d
+    return best
+
+
+def tip_or_fillet_feet_for_job(job: dict[str, Any]) -> dict[str, Any]:
+    """LE/TE landmarks: fillet-metal feet if r>0, else the tip point.
+
+    Returns feet on upper and lower walls at both ends (passage-facing sides).
+    """
+    from .job import pitch_m as cascade_pitch_m
+
+    job2 = dict(job)
+    job2["geometry"] = dict(job.get("geometry") or {})
+    g = job2["geometry"]
+    spec = spec_from_job(job2)
+    c = float(g.get("chord_m") or spec.chord_m)
+    hu = float(g.get("upper_sagitta_m") or 0.005)
+    hl = float(g.get("lower_sagitta_m") or 0.002)
+    r_le = float(g.get("le_fillet_r_m") or 0.0)
+    r_te = float(g.get("te_fillet_r_m") or 0.0)
+    # also mm mirrors
+    if g.get("le_mm") not in (None, "") and r_le <= 0:
+        r_le = float(g["le_mm"]) * 1e-3
+    if g.get("te_mm") not in (None, "") and r_te <= 0:
+        r_te = float(g["te_mm"]) * 1e-3
+
+    feet: list[dict[str, Any]] = []
+    # LE
+    if r_le > 1e-15:
+        hit = _fillet_between_arcs(c, hu, hl, r_le, want_le=True)
+        if hit is not None:
+            p_u, p_l, _arc = hit
+            feet.append({"end": "LE", "kind": "fillet_foot", "wall": "upper", "xy": p_u, "r_m": r_le})
+            feet.append({"end": "LE", "kind": "fillet_foot", "wall": "lower", "xy": p_l, "r_m": r_le})
+        else:
+            feet.append({"end": "LE", "kind": "tip", "wall": "both", "xy": (0.0, 0.0), "r_m": 0.0})
+    else:
+        feet.append({"end": "LE", "kind": "tip", "wall": "both", "xy": (0.0, 0.0), "r_m": 0.0})
+    # TE
+    if r_te > 1e-15:
+        hit = _fillet_between_arcs(c, hu, hl, r_te, want_le=False)
+        if hit is not None:
+            p_u, p_l, _arc = hit
+            feet.append({"end": "TE", "kind": "fillet_foot", "wall": "upper", "xy": p_u, "r_m": r_te})
+            feet.append({"end": "TE", "kind": "fillet_foot", "wall": "lower", "xy": p_l, "r_m": r_te})
+        else:
+            feet.append({"end": "TE", "kind": "tip", "wall": "both", "xy": (float(c), 0.0), "r_m": 0.0})
+    else:
+        feet.append({"end": "TE", "kind": "tip", "wall": "both", "xy": (float(c), 0.0), "r_m": 0.0})
+
+    return {"chord_m": c, "feet": feet, "pitch_m": float(cascade_pitch_m(job2))}
+
+
+def measure_fillet_foot_clearance(job: dict[str, Any]) -> dict[str, Any]:
+    """Min distance from tip/fillet-foot landmarks to the blade below (poly − pitch).
+
+    That shortest secant is the Auto passage-depth number Laser asked for.
+    """
+    from .job import pitch_m as cascade_pitch_m
+
+    job2 = dict(job)
+    job2["geometry"] = dict(job.get("geometry") or {})
+    pitch = float(cascade_pitch_m(job2))
+    spec = spec_from_job(job2)
+    try:
+        poly = profile_from_job(job2, spec)
+    except Exception:
+        poly, _n = safe_profile_from_job(job2, spec)
+    poly_c = center_in_pitch(poly, pitch)
+    if isinstance(poly_c, tuple):
+        poly_c = poly_c[0]
+    # Blade below = same metal shifted down by one pitch
+    below = [(xy[0], xy[1] - pitch) for xy in poly_c]
+
+    info = tip_or_fillet_feet_for_job(job2)
+    # Shift feet into centered frame the same way center_in_pitch moved poly
+    # Recompute feet on centered poly by rebuilding from centered geometry:
+    # feet from tip_or_fillet_feet are in profile_from_job frame before center —
+    # apply same y shift as center_in_pitch.
+    ys = [p[1] for p in poly]
+    y_mid = 0.5 * (min(ys) + max(ys))
+    # center_in_pitch shifts so mid-pitch aligns; match its shift
+    poly_raw = list(poly)
+    shift = poly_c[0][1] - poly_raw[0][1] if poly_raw and poly_c else 0.0
+    # More reliable: difference of centroids
+    def _cy(pts):
+        return sum(p[1] for p in pts) / max(len(pts), 1)
+    shift = _cy(poly_c) - _cy(poly_raw)
+
+    samples: list[dict[str, Any]] = []
+    best = None
+    for ft in info["feet"]:
+        # Passage to blade *below*: use upper-wall feet (and tips) — they face downward
+        # into the gap above the lower neighbor. Lower-wall feet face into metal cup.
+        if ft["wall"] == "lower":
+            continue
+        x, y = ft["xy"]
+        p = (float(x), float(y) + shift)
+        d = min_distance_point_to_poly(p, below)
+        row = {
+            "end": ft["end"],
+            "kind": ft["kind"],
+            "wall": ft["wall"],
+            "xy_m": p,
+            "dist_m": float(d),
+            "dist_mm": float(d) * 1e3,
+        }
+        samples.append(row)
+        if best is None or d < best["dist_m"]:
+            best = row
+
+    # Also include tip points always (wall both)
+    for ft in info["feet"]:
+        if ft["wall"] != "both":
+            continue
+        x, y = ft["xy"]
+        p = (float(x), float(y) + shift)
+        d = min_distance_point_to_poly(p, below)
+        row = {
+            "end": ft["end"],
+            "kind": ft["kind"],
+            "wall": "tip",
+            "xy_m": p,
+            "dist_m": float(d),
+            "dist_mm": float(d) * 1e3,
+        }
+        samples.append(row)
+        if best is None or d < best["dist_m"]:
+            best = row
+
+    g_auto = float(best["dist_m"]) if best else float("nan")
+    return {
+        "ok": best is not None and g_auto == g_auto,
+        "passage_depth_m": g_auto,
+        "passage_depth_mm": g_auto * 1e3 if best else None,
+        "pitch_m": pitch,
+        "pitch_mm": pitch * 1e3,
+        "best": best,
+        "samples": samples,
+        "note": (
+            "Auto passage depth = min distance from LE/TE fillet-metal foot "
+            "(or tip if r=0) to the blade below. Shortest secant wins."
+        ),
+    }
+
+
+def solve_pitch_for_passage_depth(
+    job: dict[str, Any],
+    target_depth_m: float,
+    *,
+    n_scan: int = 40,
+) -> dict[str, Any]:
+    """Slave pitch so fillet-foot clearance ≈ target_depth_m. Metal stays free."""
+    from .job import pitch_m as cascade_pitch_m
+
+    job2 = dict(job)
+    job2["geometry"] = dict(job.get("geometry") or {})
+    g = job2["geometry"]
+    p0 = float(cascade_pitch_m(job2))
+    target = float(target_depth_m)
+    if target <= 0:
+        return {"ok": False, "reason": "target_depth_m must be > 0", "pitch_m": p0}
+
+    def clearance_at(pitch: float) -> float:
+        gg = dict(g)
+        gg["pitch_m"] = float(pitch)
+        gg["packing_driver"] = "pitch"
+        j = dict(job2)
+        j["geometry"] = gg
+        m = measure_fillet_foot_clearance(j)
+        if not m.get("ok"):
+            raise RuntimeError(m.get("note") or "measure failed")
+        return float(m["passage_depth_m"])
+
+    # Clearance grows ~linearly with pitch for fixed metal; bracket and bisect.
+    p_lo = max(1e-4, 0.25 * p0)
+    p_hi = max(p0 * 3.0, target * 8.0, 0.02)
+    try:
+        c_lo = clearance_at(p_lo)
+        c_hi = clearance_at(p_hi)
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc), "pitch_m": p0}
+
+    # Expand hi if needed
+    guard = 0
+    while c_hi < target and guard < 8:
+        p_hi *= 1.6
+        c_hi = clearance_at(p_hi)
+        guard += 1
+    if not (c_lo <= target <= c_hi) and not (c_hi <= target <= c_lo):
+        # pick pitch minimizing |c - target|
+        best_p, best_e, best_c = p0, 1e99, None
+        for p in np.linspace(p_lo, p_hi, max(n_scan, 16)):
+            try:
+                c = clearance_at(float(p))
+            except Exception:
+                continue
+            err = abs(c - target)
+            if err < best_e:
+                best_p, best_e, best_c = float(p), err, c
+        return {
+            "ok": best_c is not None,
+            "pitch_m": best_p,
+            "pitch_mm": best_p * 1e3,
+            "passage_depth_m": best_c,
+            "passage_depth_mm": None if best_c is None else best_c * 1e3,
+            "target_m": target,
+            "slave": "pitch",
+            "note": "pitch slaved to match Auto fillet-foot clearance target",
+        }
+
+    lo, hi = p_lo, p_hi
+    mid = p0
+    c_mid = clearance_at(p0)
+    for _ in range(36):
+        mid = 0.5 * (lo + hi)
+        c_mid = clearance_at(mid)
+        if c_mid < target:
+            lo = mid
+        else:
+            hi = mid
+    return {
+        "ok": True,
+        "pitch_m": float(mid),
+        "pitch_mm": float(mid) * 1e3,
+        "passage_depth_m": float(c_mid),
+        "passage_depth_mm": float(c_mid) * 1e3,
+        "target_m": target,
+        "slave": "pitch",
+        "before_pitch_m": p0,
+        "note": "pitch slaved to match Auto fillet-foot clearance target",
+    }
