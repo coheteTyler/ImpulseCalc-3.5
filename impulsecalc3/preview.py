@@ -338,6 +338,8 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         ("x_up_c", "x_up_c", float),
         ("x_dn_c", "x_dn_c", float),
         ("stretch", "stretch", float),
+        ("le_cluster", "le_cluster", float),
+        ("n_le", "n_le", int),
     ):
         if k.get(src) not in (None, ""):
             cfd[dst] = cast(k[src])

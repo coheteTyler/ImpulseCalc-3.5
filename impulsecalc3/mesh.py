@@ -54,31 +54,137 @@ def _stretch(j: int, n: int, r: float) -> float:
     return (r**j - 1.0) / (r**n - 1.0)
 
 
-def _resample(chain: list[tuple[float, float]], n_seg: int) -> list[tuple[float, float]]:
-    """n_seg segments → n_seg+1 points including both ends, even arc-length."""
-    if n_seg < 1 or len(chain) < 2:
-        return list(chain)
+def _chain_arclength(chain: list[tuple[float, float]]) -> tuple[list[float], float]:
     s = [0.0]
     for i in range(1, len(chain)):
         s.append(s[-1] + math.hypot(chain[i][0] - chain[i - 1][0], chain[i][1] - chain[i - 1][1]))
     total = s[-1] if s[-1] > 0 else 1.0
+    return s, total
+
+
+def _interp_at_arclength(
+    chain: list[tuple[float, float]], s: list[float], total: float, target: float
+) -> tuple[float, float]:
+    if target <= 0:
+        return chain[0]
+    if target >= total:
+        return chain[-1]
+    j = 0
+    while j < len(s) - 1 and s[j + 1] < target:
+        j += 1
+    span = s[j + 1] - s[j] or 1e-16
+    t = (target - s[j]) / span
+    x = chain[j][0] + t * (chain[j + 1][0] - chain[j][0])
+    y = chain[j][1] + t * (chain[j + 1][1] - chain[j][1])
+    return (x, y)
+
+
+def _geometric_fractions(n_seg: int, ratio: float, *, dense_at: str = "start") -> list[float]:
+    """n_seg+1 fractions in [0, 1]. ratio>=1 densifies toward dense_at (start|end|both)."""
+    if n_seg < 1:
+        return [0.0]
+    r = max(float(ratio), 1.0)
+    if abs(r - 1.0) < 1e-12:
+        return [k / n_seg for k in range(n_seg + 1)]
+    if dense_at == "both":
+        # Half geometric from each end; meet at mid index.
+        n0 = n_seg // 2
+        n1 = n_seg - n0
+        if n0 < 1:
+            return _geometric_fractions(n_seg, r, dense_at="start")
+        left = _geometric_fractions(n0, r, dense_at="start")
+        right = _geometric_fractions(n1, r, dense_at="end")
+        # map left to [0,0.5], right to [0.5,1]
+        out = [0.5 * f for f in left[:-1]]
+        out.extend(0.5 + 0.5 * f for f in right)
+        return out
+    # Growing segment lengths → small cells at start when r>1.
+    lengths = [r ** i for i in range(n_seg)]
+    tot = sum(lengths) or 1.0
+    fracs = [0.0]
+    acc = 0.0
+    for L in lengths:
+        acc += L
+        fracs.append(acc / tot)
+    if dense_at == "end":
+        fracs = [1.0 - f for f in reversed(fracs)]
+    return fracs
+
+
+def _le_x_weight(x: float, xmin: float, xmax: float, le_cluster: float) -> float:
+    """Weight >=1 peaking at LE (min x). le_cluster=1 → uniform."""
+    r = max(float(le_cluster), 1.0)
+    if abs(r - 1.0) < 1e-12:
+        return 1.0
+    span = max(xmax - xmin, 1e-16)
+    t = max(0.0, min(1.0, (xmax - float(x)) / span))  # 1 at LE, 0 at TE
+    return 1.0 + (r - 1.0) * (t * t)
+
+
+def _resample_at_fractions(
+    chain: list[tuple[float, float]], fracs: list[float]
+) -> list[tuple[float, float]]:
+    if len(chain) < 2:
+        return list(chain)
+    s, total = _chain_arclength(chain)
+    return [_interp_at_arclength(chain, s, total, total * float(f)) for f in fracs]
+
+
+def _resample(chain: list[tuple[float, float]], n_seg: int) -> list[tuple[float, float]]:
+    """n_seg segments → n_seg+1 points including both ends, even arc-length."""
+    if n_seg < 1 or len(chain) < 2:
+        return list(chain)
+    return _resample_at_fractions(chain, [k / n_seg for k in range(n_seg + 1)])
+
+
+def _resample_le_cluster(
+    chain: list[tuple[float, float]],
+    n_seg: int,
+    le_cluster: float = 1.0,
+    *,
+    xmin: float | None = None,
+    xmax: float | None = None,
+) -> list[tuple[float, float]]:
+    """Arc-length sample with streamwise density peaking at LE (min x).
+
+    le_cluster=1 → uniform. le_cluster>1 biases Δs toward the low-x (LE) region
+    via quadratic x-weights on each segment (both tips of a bucket get denser).
+    """
+    if n_seg < 1 or len(chain) < 2:
+        return list(chain)
+    r = max(float(le_cluster), 1.0)
+    if abs(r - 1.0) < 1e-12:
+        return _resample(chain, n_seg)
+    xs = [p[0] for p in chain]
+    x0 = float(xmin) if xmin is not None else float(min(xs))
+    x1 = float(xmax) if xmax is not None else float(max(xs))
+    s, total = _chain_arclength(chain)
+    # Weighted segment lengths.
+    wlen = [0.0]
+    acc = 0.0
+    for i in range(1, len(chain)):
+        ds = s[i] - s[i - 1]
+        xm = 0.5 * (chain[i][0] + chain[i - 1][0])
+        acc += ds * _le_x_weight(xm, x0, x1, r)
+        wlen.append(acc)
+    wtot = wlen[-1] if wlen[-1] > 0 else 1.0
     out: list[tuple[float, float]] = []
     for k in range(n_seg + 1):
-        target = total * k / n_seg
-        if target <= 0:
+        target_w = wtot * k / n_seg
+        # Map weighted progress back to geometric arc length.
+        if target_w <= 0:
             out.append(chain[0])
             continue
-        if target >= total:
+        if target_w >= wtot:
             out.append(chain[-1])
             continue
         j = 0
-        while j < len(s) - 1 and s[j + 1] < target:
+        while j < len(wlen) - 1 and wlen[j + 1] < target_w:
             j += 1
-        span = s[j + 1] - s[j] or 1e-16
-        t = (target - s[j]) / span
-        x = chain[j][0] + t * (chain[j + 1][0] - chain[j][0])
-        y = chain[j][1] + t * (chain[j + 1][1] - chain[j][1])
-        out.append((x, y))
+        span_w = wlen[j + 1] - wlen[j] or 1e-16
+        t = (target_w - wlen[j]) / span_w
+        target_s = s[j] + t * (s[j + 1] - s[j])
+        out.append(_interp_at_arclength(chain, s, total, target_s))
     return out
 
 
@@ -214,11 +320,16 @@ def inner_match_by_angle(poly: list[tuple[float, float]], outer: np.ndarray) -> 
     return inner
 
 
-def inner_match_by_arclength(poly: list[tuple[float, float]], outer: np.ndarray) -> np.ndarray:
-    """Even metal arc-length, start at the node nearest AABB SW.
+def inner_match_by_arclength(
+    poly: list[tuple[float, float]],
+    outer: np.ndarray,
+    le_cluster: float = 1.0,
+) -> np.ndarray:
+    """Metal arc-length (optional LE cluster), start at the node nearest AABB SW.
 
     Polar angle matching on a cup puts a chord-long inner edge on the SW AABB
     wrap (checkMesh skew 4.68). Arc-length deletes that wrap jump.
+    le_cluster>1 biases wall Δs toward the min-x (LE) region.
     """
     pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
     if polygon_signed_area(pts) < 0:
@@ -227,7 +338,10 @@ def inner_match_by_arclength(poly: list[tuple[float, float]], outer: np.ndarray)
     ox, oy = float(outer[0, 0]), float(outer[0, 1])
     i0 = min(range(len(pts)), key=lambda i: (pts[i][0] - ox) ** 2 + (pts[i][1] - oy) ** 2)
     rot = pts[i0:] + pts[:i0]
-    samp = _resample(rot + [rot[0]], n_out)
+    xs = [p[0] for p in rot]
+    samp = _resample_le_cluster(
+        rot + [rot[0]], n_out, le_cluster, xmin=min(xs), xmax=max(xs)
+    )
     return np.array(samp[:-1], dtype=float)
 
 
@@ -825,9 +939,22 @@ def _pos_block(hb: np.ndarray, name: str) -> np.ndarray:
     return best
 
 
-def _resample_xy(chain_idx: list[int], ring: np.ndarray, n_seg: int) -> np.ndarray:
+def _resample_xy(
+    chain_idx: list[int],
+    ring: np.ndarray,
+    n_seg: int,
+    le_cluster: float = 1.0,
+    *,
+    xmin: float | None = None,
+    xmax: float | None = None,
+) -> np.ndarray:
     pts = [tuple(ring[i]) for i in chain_idx]
-    return np.array(_resample(pts, n_seg), dtype=float)
+    if max(float(le_cluster), 1.0) <= 1.0 + 1e-12:
+        return np.array(_resample(pts, n_seg), dtype=float)
+    return np.array(
+        _resample_le_cluster(pts, n_seg, le_cluster, xmin=xmin, xmax=xmax),
+        dtype=float,
+    )
 
 
 def _ring_corners_to_domain(ring: np.ndarray, x_in: float, x_out: float, y_bot: float, y_top: float):
@@ -907,6 +1034,7 @@ def build_offset_oh(
     stretch: float,
     d_o: float,
     n_out_x: int | None = None,
+    le_cluster: float = 1.0,
 ) -> tuple[np.ndarray, list[np.ndarray], float, list[str]]:
     """Offset O-collar + cavity TFI + outer TFI H-blocks to the pitch rectangle.
 
@@ -950,9 +1078,17 @@ def build_offset_oh(
     n_cav_x = int(n_cyc)
     n_cav_y = n_stem
     n_up = max(int(n_fill), 4)
+    le_r = max(float(le_cluster), 1.0)
+    # Local per-arc x-range: global blade x makes the whole west stem look "near LE"
+    # (flat weights). Local range densifies toward min-x *on that arc*.
+    if le_r > 1.0 + 1e-12:
+        notes.append(
+            f"streamwise LE cluster le_cluster={le_r:.3g} on wall/offset arcs "
+            "(Δs biased to min-x per arc; O wall-normal stretch unchanged)"
+        )
 
     def _side(ring, idx, nseg):
-        return _resample_xy(idx, ring, nseg)
+        return _resample_xy(idx, ring, nseg, le_r)
 
     cav_w = _side(outer_hi, inner_idx[: kNW + 1], n_cav_y)
     cav_n = _side(outer_hi, inner_idx[kNW : kNE + 1], n_cav_x)
@@ -1460,6 +1596,11 @@ def write_polymesh(
     n_fill = int(cfd.get("n_pitch_fill", 6))
     stretch = float(cfd["stretch"])
     zth = float(cfd["z_thick_m"])
+    le_cluster = max(float(cfd.get("le_cluster", 2.5) or 2.5), 1.0)
+    n_le = int(cfd.get("n_le") or 0)
+    if n_le > n_in:
+        # Optional west/LE share boost (inlet-side arc of the O ring).
+        n_in = n_le
     y_bot, y_top = -0.5 * pitch, 0.5 * pitch
 
     # 4-side ring: S/N = n_cyclic, W = n_inlet, E = n_outlet.
@@ -1562,9 +1703,21 @@ def write_polymesh(
     use_cavity = profile_has_cavity(poly0) and fam in (
         "impulse_bucket", "goldman_impulse", "goldman", "goldman_vortex",
     )
+    do_cap_note = ""
+    if passage is None and cas is None:
+        # Mirror cassette Gate-0 collar cap: keep O thin enough to clear g_min.
+        d_o_req = float(d_o)
+        if use_cavity:
+            # Tight pack: spend most of the cyclic gap on the O-collar, keep ≥8 µm.
+            d_o_req = min(0.00045, max(2e-6, 0.55 * clearance_y), 0.06 * spec.chord_m)
+        d_cap = 0.28 * max(float(gap0["g_min"]), 1e-6)
+        d_o = min(d_o_req, d_cap, 0.00045)
+        if d_o < d_o_req - 1e-16:
+            do_cap_note = (
+                f"d_o capped {d_o_req:.3g} → {d_o:.3g} m by 0.28*g_min "
+                f"(g_min={float(gap0['g_min'])*1e3:.3f} mm); O not thickened for shocks"
+            )
     if passage is None and cas is None and use_cavity:
-        # Tight pack: spend most of the cyclic gap on the O-collar, keep ≥8 µm.
-        d_o = min(0.00045, max(2e-6, 0.55 * clearance_y), 0.06 * spec.chord_m)
         ogrid, h_blocks, a2, oh_notes = build_offset_oh(
             poly0,
             x_in=x_in,
@@ -1579,9 +1732,14 @@ def write_polymesh(
             stretch=stretch,
             d_o=d_o,
             n_out_x=n_out_x,
+            le_cluster=le_cluster,
         )
         first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
         n_i = ogrid.shape[0]
+        if do_cap_note:
+            oh_notes.append(do_cap_note)
+        if le_cluster > 1.0 + 1e-12:
+            oh_notes.append(f"le_cluster={le_cluster:.3g} n_le={n_le or n_in} (west W=n_inlet={n_in})")
     elif passage is None and cas is None:
         # Tight AABB around a wall-normal offset (not metal+d_o). Cartesian H-blocks
         # need a vertical west edge; wrapping a C-shaped LE in one TFI H-block folds.
@@ -1614,9 +1772,18 @@ def write_polymesh(
                     og = og[::-1].copy()
             return og
 
-        inner = inner_match_by_angle(poly0, outer)
-        ogrid = _positive_ogrid(inner)
-        used = "centroid-angle inner"
+        if le_cluster > 1.0 + 1e-12:
+            inner = inner_match_by_arclength(poly0, outer, le_cluster=le_cluster)
+            ogrid = _positive_ogrid(inner)
+            used = f"LE-clustered arc-length inner (le_cluster={le_cluster:.3g})"
+            if min_cell_area_2d(ogrid) <= 0:
+                inner = inner_match_by_angle(poly0, outer)
+                ogrid = _positive_ogrid(inner)
+                used = "centroid-angle inner (LE arc-length folded)"
+        else:
+            inner = inner_match_by_angle(poly0, outer)
+            ogrid = _positive_ogrid(inner)
+            used = "centroid-angle inner"
         if min_cell_area_2d(ogrid) <= 0:
             inner = inner_from_profile(poly0, outer, ranges)
             ogrid = _positive_ogrid(inner)
@@ -1649,6 +1816,10 @@ def write_polymesh(
             f"4-side n_around: S/N=n_cyclic={n_cyc} E=n_outlet={n_out} W=n_inlet={n_in} (not 2*(n_cyc+n_in)). {used}",
             f"AABB pad_x={pad_x:.3g} m pad_y={pad_y:.3g} m (room to morph oval→rectangle).",
         ]
+        if do_cap_note:
+            oh_notes.append(do_cap_note)
+        if le_cluster > 1.0 + 1e-12:
+            oh_notes.append(f"le_cluster={le_cluster:.3g} n_le={n_le or n_in} (west W=n_inlet={n_in})")
 
     if cas is not None:
         y_min, y_max = cas["y_bot"], cas["y_top"]

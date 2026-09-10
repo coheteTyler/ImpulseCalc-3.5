@@ -341,6 +341,9 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     cfd.setdefault("max_co", 0.2)
     cfd.setdefault("stretch", 1.35)
     cfd.setdefault("n_pitch_fill", 7)
+    # Streamwise LE clustering on body_fitted wall ring (1=uniform). Optional n_le raises west share.
+    cfd.setdefault("le_cluster", 2.5)
+    cfd.setdefault("n_le", 14)
     job.setdefault("output_dir", "output")
     job.setdefault("geometry_test", False)
     g = job["geometry"]
