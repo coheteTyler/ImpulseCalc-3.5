@@ -54,6 +54,30 @@ def _stretch(j: int, n: int, r: float) -> float:
     return (r**j - 1.0) / (r**n - 1.0)
 
 
+def _inlet_pack_r(n: int, r: float, max_cell_ratio: float = 20.0) -> float:
+    """Geometric ratio for inlet H; soft-cap Δx_in/Δx_LE so west TFI stays positive."""
+    r = max(float(r), 1.0)
+    if n <= 1 or r <= 1.0 + 1e-12:
+        return 1.0
+    # With pack-toward-hi, inlet-plane Δx / LE Δx ≈ r**(n-1).
+    if r ** (n - 1) <= max_cell_ratio:
+        return r
+    return float(max_cell_ratio ** (1.0 / (n - 1)))
+
+
+def _xs_pack_hi(x_lo: float, x_hi: float, n: int, r: float) -> np.ndarray:
+    """n+1 x-nodes from x_lo→x_hi with geometric pack toward x_hi (LE / blade).
+
+    Mirrors dump ``xs_east`` which packs toward the low-x (blade) end via ``_stretch``.
+    Inlet H runs x_in→LE join, so pack the high-x end.
+    """
+    r = _inlet_pack_r(n, r)
+    return np.array(
+        [x_hi - (x_hi - x_lo) * _stretch(n - j, n, r) for j in range(n + 1)],
+        dtype=float,
+    )
+
+
 def _chain_arclength(chain: list[tuple[float, float]]) -> tuple[list[float], float]:
     s = [0.0]
     for i in range(1, len(chain)):
@@ -794,6 +818,15 @@ def _lin(p0: np.ndarray, p1: np.ndarray, n_seg: int) -> np.ndarray:
     return (1.0 - t) * p0[None, :] + t * p1[None, :]
 
 
+def _lin_pack_end(p0, p1, n_seg: int, r: float) -> np.ndarray:
+    """Polyline p0→p1 with geometric pack toward p1 (same law as ``_xs_pack_hi``)."""
+    p0 = np.asarray(p0, dtype=float).reshape(2)
+    p1 = np.asarray(p1, dtype=float).reshape(2)
+    r = _inlet_pack_r(n_seg, r)
+    t = np.array([1.0 - _stretch(n_seg - j, n_seg, r) for j in range(n_seg + 1)], dtype=float)[:, None]
+    return (1.0 - t) * p0[None, :] + t * p1[None, :]
+
+
 def _force_mono_x(pts: np.ndarray) -> np.ndarray:
     xs = np.asarray(pts[:, 0], dtype=float).copy()
     for i in range(1, xs.shape[0]):
@@ -1035,6 +1068,7 @@ def build_offset_oh(
     d_o: float,
     n_out_x: int | None = None,
     le_cluster: float = 1.0,
+    inlet_stretch: float | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray], float, list[str]]:
     """Offset O-collar + cavity TFI + outer TFI H-blocks to the pitch rectangle.
 
@@ -1044,6 +1078,7 @@ def build_offset_oh(
     """
     notes: list[str] = []
     n_out_x = int(n_out_x or n_out)
+    r_inlet = max(float(inlet_stretch if inlet_stretch is not None else stretch), 1.0)
     n_hi = max(4 * (2 * n_cyc + n_in + n_out), 400)
     inner_hi = resample_closed(poly0, n_hi)
     if polygon_signed_area([(float(x), float(y)) for x, y in inner_hi]) < 0:
@@ -1188,8 +1223,14 @@ def build_offset_oh(
 
     x_join_w = float(pLt[0])
     x_join_e = float(pRt[0])
-    xs_w = np.linspace(x_in, x_join_w, n_in + 1)
+    # Inlet H axial: pack toward LE join (high-x), mirror dump stretch toward blade.
+    r_in = _inlet_pack_r(n_in, r_inlet)
+    xs_w = _xs_pack_hi(x_in, x_join_w, n_in, r_in)
     xs_s = np.linspace(x_join_w, x_join_e, n_cyc + 1)
+    notes.append(
+        f"inlet H axial pack toward LE (inlet_stretch={r_inlet:.3g}→{r_in:.3g}, n_inlet={n_in}); "
+        "Δx smaller near LE join than at x_in"
+    )
     x_cart = min(x_out - 1e-6, max(float(outer_hi[:, 0].max()), x_join_e) + 2e-4)
     xs_near = np.linspace(x_join_e, x_cart, n_out + 1)
     xs_dump = np.linspace(x_cart, x_out, n_out_x + 1)
@@ -1214,8 +1255,8 @@ def build_offset_oh(
     )
     h_west = _pos_block(
         tfi_block(
-            _lin((x_in, pLt[1]), pLt, n_in),
-            _lin((x_in, pNW_o[1]), pNW_o, n_in),
+            _lin_pack_end((x_in, pLt[1]), pLt, n_in, r_in),
+            _lin_pack_end((x_in, pNW_o[1]), pNW_o, n_in, r_in),
             np.column_stack([np.full(west_s2n.shape[0], x_in), west_s2n[:, 1]]),
             west_s2n,
         ),
@@ -1223,8 +1264,8 @@ def build_offset_oh(
     )
     h_west_up = _pos_block(
         tfi_block(
-            _lin((x_in, pNW_o[1]), pNW_o, n_in),
-            _lin((x_in, pNW_top[1]), pNW_top, n_in),
+            _lin_pack_end((x_in, pNW_o[1]), pNW_o, n_in, r_in),
+            _lin_pack_end((x_in, pNW_top[1]), pNW_top, n_in, r_in),
             np.column_stack([np.full(west_up_s2n.shape[0], x_in), west_up_s2n[:, 1]]),
             west_up_s2n,
         ),
@@ -1251,7 +1292,7 @@ def build_offset_oh(
     h_sw = _pos_block(
         tfi_block(
             np.column_stack([xs_w, np.full(xs_w.shape[0], y_bot)]),
-            _lin((x_in, pLt[1]), pLt, n_in),
+            _lin_pack_end((x_in, pLt[1]), pLt, n_in, r_in),
             _lin((x_in, y_bot), (x_in, pLt[1]), n_fill),
             _lin(join_w_bot, pLt, n_fill),
         ),
@@ -1268,7 +1309,7 @@ def build_offset_oh(
     )
     h_nw = _pos_block(
         tfi_block(
-            _lin((x_in, pNW_top[1]), pNW_top, n_in),
+            _lin_pack_end((x_in, pNW_top[1]), pNW_top, n_in, r_in),
             np.column_stack([xs_w, np.full(xs_w.shape[0], y_top)]),
             _lin((x_in, pNW_top[1]), (x_in, y_top), n_fill),
             _lin(pNW_top, join_w_top, n_fill),
@@ -1465,8 +1506,8 @@ def build_cassette_oh(
         # inlet / outlet of this channel
         s0 = resample_open_arclength(ss_a, n_st + 1)
         n0 = resample_open_arclength(ps_b, n_st + 1)
-        s_head = _lin((x_in, float(s0[0, 1])), s0[0], n_in)
-        n_head = _lin((x_in, float(n0[0, 1])), n0[0], n_in)
+        s_head = _lin_pack_end((x_in, float(s0[0, 1])), s0[0], n_in, max(stretch, 1.0))
+        n_head = _lin_pack_end((x_in, float(n0[0, 1])), n0[0], n_in, max(stretch, 1.0))
         west_in = _lin(s_head[0], n_head[0], n_span)
         east_in = _lin(s0[0], n0[0], n_span)
         h_blocks.append(_pos_block(tfi_block(s_head, n_head, west_in, east_in), f"in{k}"))
@@ -1595,6 +1636,8 @@ def write_polymesh(
     n_around_req = int(cfd.get("n_around", 48))
     n_fill = int(cfd.get("n_pitch_fill", 6))
     stretch = float(cfd["stretch"])
+    # Inlet H axial pack ratio; dump still uses stretch on xs_east.
+    inlet_stretch = float(cfd.get("inlet_stretch") or stretch)
     zth = float(cfd["z_thick_m"])
     le_cluster = max(float(cfd.get("le_cluster", 2.5) or 2.5), 1.0)
     n_le = int(cfd.get("n_le") or 0)
@@ -1733,6 +1776,7 @@ def write_polymesh(
             d_o=d_o,
             n_out_x=n_out_x,
             le_cluster=le_cluster,
+            inlet_stretch=inlet_stretch,
         )
         first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
         n_i = ogrid.shape[0]
@@ -1797,14 +1841,16 @@ def write_polymesh(
             a2 = min_cell_area_2d(ogrid)
         first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
         n_i = ogrid.shape[0]
-        h_west = _pos_block(cartesian_block(x_in, bx0, by0, by1, n_in, n_in), "west")
+        # Inlet H axial pack toward AABB west face (LE / blade), mirror xs_east dump stretch.
+        xs_west = _xs_pack_hi(x_in, bx0, n_in, max(inlet_stretch, 1.0))
+        h_west = _pos_block(cartesian_block_xy(xs_west, np.linspace(by0, by1, n_in + 1)), "west")
         xs_east = np.array([bx1 + (x_out - bx1) * _stretch(j, n_out_x, max(stretch, 1.0)) for j in range(n_out_x + 1)])
         h_east = _pos_block(cartesian_block_xy(xs_east, np.linspace(by0, by1, n_out + 1)), "east")
         h_south = _pos_block(cartesian_block(bx0, bx1, y_bot, by0, n_cyc, n_fill), "south")
         h_north = _pos_block(cartesian_block(bx0, bx1, by1, y_top, n_cyc, n_fill), "north")
-        h_sw = _pos_block(cartesian_block(x_in, bx0, y_bot, by0, n_in, n_fill), "sw")
+        h_sw = _pos_block(cartesian_block_xy(xs_west, np.linspace(y_bot, by0, n_fill + 1)), "sw")
         h_se = _pos_block(cartesian_block_xy(xs_east, np.linspace(y_bot, by0, n_fill + 1)), "se")
-        h_nw = _pos_block(cartesian_block(x_in, bx0, by1, y_top, n_in, n_fill), "nw")
+        h_nw = _pos_block(cartesian_block_xy(xs_west, np.linspace(by1, y_top, n_fill + 1)), "nw")
         h_ne = _pos_block(cartesian_block_xy(xs_east, np.linspace(by1, y_top, n_fill + 1)), "ne")
         h_blocks = [h_west, h_east, h_south, h_north, h_sw, h_se, h_nw, h_ne]
         oh_notes = [
@@ -1815,6 +1861,7 @@ def write_polymesh(
             "NOT subsetMesh stairs. One-block TFI from a wrapped LE to the inlet folds; not used.",
             f"4-side n_around: S/N=n_cyclic={n_cyc} E=n_outlet={n_out} W=n_inlet={n_in} (not 2*(n_cyc+n_in)). {used}",
             f"AABB pad_x={pad_x:.3g} m pad_y={pad_y:.3g} m (room to morph oval→rectangle).",
+            f"inlet H axial pack toward LE (inlet_stretch={max(inlet_stretch, 1.0):.3g}, n_inlet={n_in})",
         ]
         if do_cap_note:
             oh_notes.append(do_cap_note)

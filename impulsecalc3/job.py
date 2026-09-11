@@ -332,7 +332,7 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     cfd.setdefault("z_thick_m", 0.001)
     cfd.setdefault("n_around", 56)
     cfd.setdefault("n_radial", 12)
-    cfd.setdefault("n_inlet", 10)
+    cfd.setdefault("n_inlet", 22)
     cfd.setdefault("n_outlet", 28)
     cfd.setdefault("n_cyclic", 16)
     cfd.setdefault("x_up_c", 1.5)
@@ -340,6 +340,8 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     cfd.setdefault("outlet_p", "waveTransmissive")
     cfd.setdefault("max_co", 0.2)
     cfd.setdefault("stretch", 1.35)
+    # Inlet H axial geometric pack toward LE (soft-capped in mesh; dump still uses stretch).
+    cfd.setdefault("inlet_stretch", 1.12)
     cfd.setdefault("n_pitch_fill", 7)
     # Streamwise LE clustering on body_fitted wall ring (1=uniform). Optional n_le raises west share.
     cfd.setdefault("le_cluster", 2.5)
