@@ -1588,6 +1588,411 @@ def build_cassette_oh(
     }
 
 
+
+def _tri_area2(a, b, c) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+
+
+def _hybrid_size_m(
+    x: float,
+    y: float,
+    *,
+    le: tuple[float, float],
+    pass_xy: tuple[float, float],
+    h_le: float,
+    h_pass: float,
+    h_far: float,
+    growth: float,
+) -> float:
+    """Soft size field: small at LE + passage core, grow geometrically with distance."""
+    g = max(float(growth), 1.0 + 1e-9)
+    hl = max(float(h_le), 1e-9)
+    hp = max(float(h_pass), 1e-9)
+    hf = max(float(h_far), hp)
+    d_le = math.hypot(x - le[0], y - le[1])
+    d_p = math.hypot(x - pass_xy[0], y - pass_xy[1])
+    h = min(hf, hl * (g ** (d_le / hl)), hp * (g ** (d_p / hp)))
+    return float(max(h, 0.45 * hl))
+
+
+def _min_dist_to_poly(x: float, y: float, poly: list[tuple[float, float]]) -> float:
+    """Min distance from point to polygon boundary edges."""
+    best = 1e300
+    n = len(poly)
+    if n < 2:
+        return best
+    for i in range(n - 1):
+        x0, y0 = poly[i]
+        x1, y1 = poly[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-30:
+            d = math.hypot(x - x0, y - y0)
+        else:
+            t = max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / L2))
+            d = math.hypot(x - (x0 + t * dx), y - (y0 + t * dy))
+        if d < best:
+            best = d
+    return float(best)
+
+
+def _seed_size_field(
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    size_fn,
+    hole_closed: list[tuple[float, float]],
+    *,
+    max_depth: int = 18,
+    max_pts: int = 60000,
+) -> list[list[float]]:
+    """Quadtree seeds outside the O+wake hole; spacing tracks local size field."""
+    out: list[list[float]] = []
+
+    def rec(xa, xb, ya, yb, depth: int) -> None:
+        if len(out) >= max_pts:
+            return
+        cx, cy = 0.5 * (xa + xb), 0.5 * (ya + yb)
+        in_hole = point_in_closed_poly(cx, cy, hole_closed)
+        hx = xb - xa
+        hy = yb - ya
+        if in_hole:
+            if depth < max_depth and max(hx, hy) > 2e-5:
+                xm, ym = cx, cy
+                rec(xa, xm, ya, ym, depth + 1)
+                rec(xm, xb, ya, ym, depth + 1)
+                rec(xa, xm, ym, yb, depth + 1)
+                rec(xm, xb, ym, yb, depth + 1)
+            return
+        h = float(size_fn(cx, cy))
+        if (hx <= 1.35 * h and hy <= 1.35 * h) or depth >= max_depth:
+            # Keep a soft halo outside the O-hole so interface tris are not cliffs.
+            if _min_dist_to_poly(cx, cy, hole_closed) < 0.55 * h:
+                return
+            out.append([cx, cy])
+            return
+        xm, ym = cx, cy
+        rec(xa, xm, ya, ym, depth + 1)
+        rec(xm, xb, ya, ym, depth + 1)
+        rec(xa, xm, ym, yb, depth + 1)
+        rec(xm, xb, ym, yb, depth + 1)
+
+    rec(x0, x1, y0, y1, 0)
+    return out
+
+
+def _wake_outer_row(wake: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Wake row whose endpoints match O-outer cut nodes A,B."""
+    eps = 1e-8
+    for j in (0, -1):
+        row = np.asarray(wake[:, j, :], dtype=float)
+        d00 = float(np.linalg.norm(row[0] - a))
+        d01 = float(np.linalg.norm(row[0] - b))
+        d10 = float(np.linalg.norm(row[-1] - a))
+        d11 = float(np.linalg.norm(row[-1] - b))
+        if d00 < eps and d11 < eps:
+            return row
+        if d01 < eps and d10 < eps:
+            return row
+    raise RuntimeError("hybrid: TE wake outer row does not match O-outer cuts")
+
+
+def _hole_loop_o_wake(ogrid: np.ndarray, wake: np.ndarray) -> np.ndarray:
+    """Closed O-outer + wake-outer loop (hole = metal + O collar + TE wake)."""
+    oo = np.asarray(ogrid[:, -1, :], dtype=float)
+    a, b = oo[0], oo[-1]
+    wrow = _wake_outer_row(wake, a, b)
+    eps = 1e-8
+    if float(np.linalg.norm(wrow[0] - b)) < eps and float(np.linalg.norm(wrow[-1] - a)) < eps:
+        mid = wrow[1:-1]
+    elif float(np.linalg.norm(wrow[0] - a)) < eps and float(np.linalg.norm(wrow[-1] - b)) < eps:
+        mid = wrow[-2:0:-1]
+    else:
+        raise RuntimeError("hybrid: cannot close O-outer with wake outer")
+    if mid.size:
+        return np.vstack([oo, mid])
+    return oo.copy()
+
+
+def _build_passage_triangles(
+    *,
+    ogrid: np.ndarray,
+    wake: np.ndarray,
+    dump: np.ndarray,
+    poly0: list[tuple[float, float]],
+    x_in: float,
+    y_bot: float,
+    y_top: float,
+    h_le: float,
+    h_pass: float,
+    h_far: float,
+    growth: float,
+) -> tuple[np.ndarray, dict[str, float], list[str]]:
+    """Constrained Delaunay triangles west of dump, outside O+wake. No Gmsh."""
+    try:
+        import triangle as tr
+    except ImportError as e:
+        raise RuntimeError(
+            "hybrid_OH_tri requires the 'triangle' package in .venv "
+            "(pip install triangle). Gmsh is not used."
+        ) from e
+
+    notes: list[str] = []
+    hole = _hole_loop_o_wake(ogrid, wake)
+    hole_closed = [(float(x), float(y)) for x, y in hole] + [
+        (float(hole[0, 0]), float(hole[0, 1]))
+    ]
+    x_cart = float(dump[0, 0, 0])
+    west = np.asarray(dump[0, :, :], dtype=float)
+    if float(west[0, 1]) > float(west[-1, 1]):
+        west = west[::-1].copy()
+
+    le = min(poly0, key=lambda p: p[0])
+    xs_m = [p[0] for p in poly0]
+    pass_xy = (0.5 * (min(xs_m) + max(xs_m)), 0.0)
+
+    def size_fn(x: float, y: float) -> float:
+        return _hybrid_size_m(
+            x, y, le=le, pass_xy=pass_xy, h_le=h_le, h_pass=h_pass, h_far=h_far, growth=growth
+        )
+
+    # Matched cyclic x-nodes (true one-pitch cyclic).
+    xs_c: list[float] = []
+    x = float(x_in)
+    guard = 0
+    while x < x_cart - 1e-12 and guard < 100000:
+        xs_c.append(x)
+        x += max(size_fn(x, y_bot), 0.5 * h_le)
+        guard += 1
+    if not xs_c or abs(xs_c[-1] - x_cart) > 1e-12:
+        xs_c.append(x_cart)
+    else:
+        xs_c[-1] = x_cart
+    bottom = [(float(xx), float(y_bot)) for xx in xs_c]
+    top = [(float(xx), float(y_top)) for xx in xs_c]
+    n_in_s = max(4, int(math.ceil((y_top - y_bot) / max(h_far, 1e-9))))
+    inlet = [(float(x_in), float(yy)) for yy in np.linspace(y_top, y_bot, n_in_s + 1)]
+    dump_west = [(float(p[0]), float(p[1])) for p in west]
+
+    outer: list[tuple[float, float]] = []
+    outer += bottom[:-1]
+    outer += dump_west[:-1]
+    outer += list(reversed(top))[:-1]
+    outer += inlet[:-1]
+
+    verts: list[list[float]] = []
+    segs: list[list[int]] = []
+
+    def add_closed(pts: list[tuple[float, float]]) -> None:
+        i0 = len(verts)
+        for p in pts:
+            verts.append([float(p[0]), float(p[1])])
+        n = len(pts)
+        for i in range(n):
+            segs.append([i0 + i, i0 + ((i + 1) % n)])
+
+    add_closed(outer)
+    add_closed([(float(x), float(y)) for x, y in hole])
+
+    cx, cy = polygon_centroid(poly0)
+    if not point_in_closed_poly(cx, cy, hole_closed):
+        # Fallback: average of O-wall ring (inside collar/metal side of hole).
+        cx = float(np.mean(ogrid[:, 0, 0]))
+        cy = float(np.mean(ogrid[:, 0, 1]))
+    holes = np.asarray([[cx, cy]], dtype=float)
+
+    seeds = _seed_size_field(x_in, x_cart, y_bot, y_top, size_fn, hole_closed)
+    verts_arr = np.asarray(verts + seeds, dtype=float)
+    seg_arr = np.asarray(segs, dtype=np.int32)
+    a_max = 0.5 * (1.5 * h_far) ** 2
+    # Y: no Steiner on constrained O-outer / dump-west (conformal to hex).
+    # q28: a bit softer than q33 to avoid knife tris on long dump/cyclic edges.
+    opts = f"pq28a{a_max:.8e}Y"
+    res = tr.triangulate(
+        {"vertices": verts_arr, "segments": seg_arr, "holes": holes},
+        opts,
+    )
+    vout = np.asarray(res["vertices"], dtype=float)
+    tris_i = np.asarray(res["triangles"], dtype=np.int32)
+    if tris_i.size == 0:
+        raise RuntimeError("hybrid: triangulation produced zero triangles")
+    tris = vout[tris_i]  # (n, 3, 2)
+    # Positive CCW
+    areas = np.array([_tri_area2(t[0], t[1], t[2]) for t in tris], dtype=float)
+    flip = areas < 0
+    if np.any(flip):
+        tris = tris.copy()
+        tris[flip] = tris[flip][:, ::-1, :]
+        areas = np.abs(areas)
+
+    # Edge length stats
+    def edge_lens(t):
+        return (
+            math.hypot(t[1, 0] - t[0, 0], t[1, 1] - t[0, 1]),
+            math.hypot(t[2, 0] - t[1, 0], t[2, 1] - t[1, 1]),
+            math.hypot(t[0, 0] - t[2, 0], t[0, 1] - t[2, 1]),
+        )
+
+    # Passage cloud: mid-chord band near pass_xy
+    ax, ay = pass_xy
+    pass_hs: list[float] = []
+    le_hs: list[float] = []
+    chord_x = max(max(xs_m) - min(xs_m), 1e-6)
+    for t in tris:
+        cx_t = float(t[:, 0].mean())
+        cy_t = float(t[:, 1].mean())
+        el = edge_lens(t)
+        hmed = float(np.median(el))
+        if abs(cx_t - ax) < 0.25 * chord_x and abs(cy_t - ay) < 0.35 * (y_top - y_bot):
+            pass_hs.append(hmed)
+        # LE fan cloud: forward of mid-chord, near LE x (fluid side of O).
+        if cx_t < le[0] + 0.15 * chord_x and math.hypot(cx_t - le[0], cy_t - le[1]) < max(8.0 * h_le, 0.08 * chord_x):
+            le_hs.append(hmed)
+
+    # Neighbor size ratio via shared edges (approx from edge length pairs at verts)
+    max_ratio = 1.0
+    # Build edge → lengths from adjacent tris
+    edge_h: dict[tuple[int, int], list[float]] = {}
+    for ti, idx in enumerate(tris_i):
+        el = edge_lens(tris[ti])
+        for a, b, eh in ((int(idx[0]), int(idx[1]), el[0]), (int(idx[1]), int(idx[2]), el[1]), (int(idx[2]), int(idx[0]), el[2])):
+            key = (a, b) if a < b else (b, a)
+            edge_h.setdefault(key, []).append(eh)
+    for hs in edge_h.values():
+        if len(hs) >= 2:
+            lo, hi = min(hs), max(hs)
+            if lo > 1e-16:
+                max_ratio = max(max_ratio, hi / lo)
+        # also compare to vertex-incident — skip heavy
+
+    # Soft vertex size ratio from incident edge lengths
+    vert_len: dict[int, list[float]] = {}
+    for (a, b), hs in edge_h.items():
+        h = float(np.mean(hs))
+        vert_len.setdefault(a, []).append(h)
+        vert_len.setdefault(b, []).append(h)
+    for hs in vert_len.values():
+        if not hs:
+            continue
+        lo, hi = min(hs), max(hs)
+        if lo > 1e-16:
+            max_ratio = max(max_ratio, hi / lo)
+
+    stats = {
+        "n_tri": float(len(tris)),
+        "passage_h_m": float(np.median(pass_hs)) if pass_hs else float("nan"),
+        "le_h_m": float(np.median(le_hs)) if le_hs else float("nan"),
+        "max_size_ratio": float(max_ratio),
+        "h_le": float(h_le),
+        "h_pass": float(h_pass),
+        "h_far": float(h_far),
+        "growth": float(growth),
+    }
+    notes.append(
+        f"hybrid triangles: n_tri={len(tris)} seeds={len(seeds)} "
+        f"h_le={h_le*1e3:.3f}mm h_pass={h_pass*1e3:.3f}mm h_far={h_far*1e3:.3f}mm growth={growth:.3g}"
+    )
+    notes.append(
+        f"tri size field soft; passage median h="
+        f"{(stats['passage_h_m']*1e3 if stats['passage_h_m']==stats['passage_h_m'] else float('nan')):.3f} mm, "
+        f"LE cloud h="
+        f"{(stats['le_h_m']*1e3 if stats['le_h_m']==stats['le_h_m'] else float('nan')):.3f} mm, "
+        f"max neighbor size ratio≈{max_ratio:.2f}"
+    )
+    notes.append("O-outer + dump-west are constrained edges (triangle -Y); no LE holes.")
+    notes.append(f"triangle opts={opts} (Shewchuk; not Gmsh)")
+    return tris, stats, notes
+
+
+def build_hybrid_oh_tri(
+    poly0: list[tuple[float, float]],
+    *,
+    x_in: float,
+    x_out: float,
+    y_bot: float,
+    y_top: float,
+    n_in: int,
+    n_out: int,
+    n_cyc: int,
+    n_rad: int,
+    n_fill: int,
+    stretch: float,
+    d_o: float,
+    n_out_x: int | None = None,
+    le_cluster: float = 1.0,
+    inlet_stretch: float | None = None,
+    h_le: float | None = None,
+    h_pass: float | None = None,
+    h_far: float | None = None,
+    growth: float = 1.25,
+    g_min: float | None = None,
+) -> dict[str, Any]:
+    """O-collar (quads) + TE wake H + dump H + passage/LE triangles. One pitch."""
+    ogrid, h_all, a2, notes = build_offset_oh(
+        poly0,
+        x_in=x_in,
+        x_out=x_out,
+        y_bot=y_bot,
+        y_top=y_top,
+        n_in=n_in,
+        n_out=n_out,
+        n_cyc=n_cyc,
+        n_rad=n_rad,
+        n_fill=n_fill,
+        stretch=stretch,
+        d_o=d_o,
+        n_out_x=n_out_x,
+        le_cluster=le_cluster,
+        inlet_stretch=inlet_stretch,
+    )
+    wake = h_all[0]
+    dump = h_all[-1]
+    gm = float(g_min) if g_min is not None else 8e-4
+    hp = float(h_pass) if h_pass is not None else float(min(0.12e-3, max(0.05e-3, 0.12 * gm)))
+    hl = float(h_le) if h_le is not None else float(0.45 * hp)
+    hf = float(h_far) if h_far is not None else float(4.0 * hp)
+    gr = max(float(growth), 1.05)
+    tris, stats, tnotes = _build_passage_triangles(
+        ogrid=ogrid,
+        wake=wake,
+        dump=dump,
+        poly0=poly0,
+        x_in=x_in,
+        y_bot=y_bot,
+        y_top=y_top,
+        h_le=hl,
+        h_pass=hp,
+        h_far=hf,
+        growth=gr,
+    )
+    notes = list(notes) + tnotes
+    notes.append(
+        "mesh_kind hybrid_OH_tri: keep post-blade TE open-O + dump H; "
+        "replace LE/passage Cartesian H with constrained triangles; one pitch true cyclic."
+    )
+    notes.append("NOT 3-blade premesh stack. NOT Gmsh. NOT cassette.")
+    first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
+    n_quad = int(ogrid.shape[0] * (ogrid.shape[1] - 1))
+    # wake cells + dump cells
+    n_quad += int((wake.shape[0] - 1) * (wake.shape[1] - 1))
+    n_quad += int((dump.shape[0] - 1) * (dump.shape[1] - 1))
+    return {
+        "ogrid": ogrid,
+        "h_blocks": [wake, dump],
+        "tris": tris,
+        "a2": a2,
+        "notes": notes,
+        "first_cell": first_cell,
+        "n_i": int(ogrid.shape[0]),
+        "d_o": float(d_o),
+        "stats": stats,
+        "n_quad": n_quad,
+        "n_tri": int(len(tris)),
+    }
+
+
+
 @dataclass
 class MeshBuild:
     n_cells: int
@@ -1609,6 +2014,11 @@ class MeshBuild:
     n_radial: int = 0
     d_o_m: float = 0.0
     mesh_kind: str = "body_fitted_OH"
+    n_tri: int = 0
+    n_quad: int = 0
+    passage_h_m: float = 0.0
+    le_h_m: float = 0.0
+    max_size_ratio: float = 0.0
 
 
 def _point_key(x: float, y: float, z: float) -> tuple[int, int, int]:
@@ -1641,9 +2051,23 @@ def write_polymesh(
     zth = float(cfd["z_thick_m"])
     le_cluster = max(float(cfd.get("le_cluster", 2.5) or 2.5), 1.0)
     n_le = int(cfd.get("n_le") or 0)
+    mesh_req = str(cfd.get("mesh") or "body_fitted_OH").strip()
+    use_hybrid = mesh_req in ("hybrid_OH_tri", "hybrid_oh_tri", "hybrid")
+    h_le_knob = cfd.get("h_le")
+    h_pass_knob = cfd.get("h_pass")
+    h_far_knob = cfd.get("h_far")
+    growth_knob = float(cfd.get("growth") or 1.25)
+    hybrid_tris: np.ndarray | None = None
+    hybrid_stats: dict[str, float] = {}
+    n_tri_cells = 0
+    n_quad_cells = 0
+
     if n_le > n_in:
         # Optional west/LE share boost (inlet-side arc of the O ring).
         n_in = n_le
+    # hybrid_OH_tri: one pitch, true cyclic — do not stack 3 premeshed blades.
+    if use_hybrid:
+        n_blades = 1
     y_bot, y_top = -0.5 * pitch, 0.5 * pitch
 
     # 4-side ring: S/N = n_cyclic, W = n_inlet, E = n_outlet.
@@ -1674,7 +2098,8 @@ def write_polymesh(
             "Refuse mesh/solve."
         )
     d_o_gate = min(0.00045, 0.06 * spec.chord_m)
-    if yspan + 2.0 * d_o_gate >= float(pitch):
+    # Hybrid refuses cassette stacking (one-pitch strip only).
+    if (not use_hybrid) and yspan + 2.0 * d_o_gate >= float(pitch):
         cas = build_cassette_oh(
             poly0,
             pitch=pitch,
@@ -1760,7 +2185,44 @@ def write_polymesh(
                 f"d_o capped {d_o_req:.3g} → {d_o:.3g} m by 0.28*g_min "
                 f"(g_min={float(gap0['g_min'])*1e3:.3f} mm); O not thickened for shocks"
             )
-    if passage is None and cas is None and use_cavity:
+    if passage is None and cas is None and use_cavity and use_hybrid:
+        hy = build_hybrid_oh_tri(
+            poly0,
+            x_in=x_in,
+            x_out=x_out,
+            y_bot=y_bot,
+            y_top=y_top,
+            n_in=n_in,
+            n_out=n_out,
+            n_cyc=n_cyc,
+            n_rad=n_rad,
+            n_fill=n_fill,
+            stretch=stretch,
+            d_o=d_o,
+            n_out_x=n_out_x,
+            le_cluster=le_cluster,
+            inlet_stretch=inlet_stretch,
+            h_le=(float(h_le_knob) if h_le_knob not in (None, "") else None),
+            h_pass=(float(h_pass_knob) if h_pass_knob not in (None, "") else None),
+            h_far=(float(h_far_knob) if h_far_knob not in (None, "") else None),
+            growth=growth_knob,
+            g_min=float(gap0["g_min"]),
+        )
+        ogrid = hy["ogrid"]
+        h_blocks = hy["h_blocks"]
+        hybrid_tris = hy["tris"]
+        a2 = hy["a2"]
+        oh_notes = list(hy["notes"])
+        first_cell = hy["first_cell"]
+        n_i = hy["n_i"]
+        n_tri_cells = int(hy["n_tri"])
+        n_quad_cells = int(hy["n_quad"])
+        hybrid_stats = dict(hy["stats"])
+        if do_cap_note:
+            oh_notes.append(do_cap_note)
+        if le_cluster > 1.0 + 1e-12:
+            oh_notes.append(f"le_cluster={le_cluster:.3g} n_le={n_le or n_in} (west W=n_inlet={n_in})")
+    elif passage is None and cas is None and use_cavity:
         ogrid, h_blocks, a2, oh_notes = build_offset_oh(
             poly0,
             x_in=x_in,
@@ -1898,6 +2360,14 @@ def write_polymesh(
         (0, 4, 7, 3),
         (1, 2, 6, 5),
     )
+    # Prism (extruded triangle): verts 0,1,2 @ z0 and 3,4,5 @ z1.
+    PRISM_FACES = (
+        (0, 2, 1),
+        (3, 4, 5),
+        (0, 1, 4, 3),
+        (1, 2, 5, 4),
+        (2, 0, 3, 5),
+    )
     WALL_FACE = 2
     face_owner: dict[frozenset[int], tuple[list[int], int]] = {}
     face_neigh: dict[frozenset[int], int] = {}
@@ -1913,6 +2383,22 @@ def write_polymesh(
             key = frozenset(fverts)
             if wall_patch is not None and fi == WALL_FACE:
                 wall_keys[key] = wall_patch
+            if key in face_owner:
+                face_neigh[key] = ci
+            else:
+                face_owner[key] = (fverts, ci)
+
+    def add_prism(corners_xy: list[tuple[float, float]]) -> None:
+        """Extrude a CCW triangle to a prism (empty frontAndBack)."""
+        nonlocal n_cells
+        ci = n_cells
+        n_cells += 1
+        bots = [pid_xy(x, y, 0) for x, y in corners_xy]
+        tops = [pid_xy(x, y, 1) for x, y in corners_xy]
+        verts = bots + tops
+        for fs in PRISM_FACES:
+            fverts = [verts[q] for q in fs]
+            key = frozenset(fverts)
             if key in face_owner:
                 face_neigh[key] = ci
             else:
@@ -1984,6 +2470,12 @@ def write_polymesh(
                 # Wake: no 2D flip — flip was making OF face pyramids disagree at TE.
                 flip = not (hoh_wake and bi == 0)
                 add_struct(hb, dy, False, wall_patch=wp, flip_neg=flip)
+        if hybrid_tris is not None:
+            for tri in hybrid_tris:
+                corners = [(float(tri[i, 0]), float(tri[i, 1])) for i in range(3)]
+                if _tri_area2(corners[0], corners[1], corners[2]) < 0:
+                    corners = [corners[0], corners[2], corners[1]]
+                add_prism(corners)
 
     internal = []
     boundary = []
@@ -2062,6 +2554,42 @@ def write_polymesh(
 
     buckets["bottom"].sort(key=lambda t: (round(t[2][0], 9), round(t[2][2], 9)))
     buckets["top"].sort(key=lambda t: (round(t[2][0], 9), round(t[2][2], 9)))
+
+    def _canon_cyclic_outward(fverts: list[int], *, side: str) -> list[int]:
+        """Match body_fitted cyclic quads: both start at (min x, z=0); opposite xz winding
+        so each face is outward (bottom -y, top +y) and 0th vertices couple.
+        bottom: (lo,z0)->(hi,z0)->(hi,z1)->(lo,z1)
+        top:    (lo,z0)->(lo,z1)->(hi,z1)->(hi,z0)
+        """
+        if len(fverts) != 4:
+            return fverts
+        ps = [(points[i][0], points[i][2], i) for i in fverts]
+        z0 = min(p[1] for p in ps)
+        z1 = max(p[1] for p in ps)
+        bot = sorted([p for p in ps if abs(p[1] - z0) <= abs(p[1] - z1)], key=lambda p: p[0])
+        top = sorted([p for p in ps if abs(p[1] - z1) < abs(p[1] - z0)], key=lambda p: p[0])
+        # robust split by z clusters
+        zs = sorted(set(round(p[1], 15) for p in ps))
+        if len(zs) >= 2:
+            z0, z1 = zs[0], zs[-1]
+            bot = sorted([p for p in ps if abs(p[1] - z0) < 1e-12], key=lambda p: p[0])
+            top = sorted([p for p in ps if abs(p[1] - z1) < 1e-12], key=lambda p: p[0])
+        if len(bot) != 2 or len(top) != 2:
+            return fverts
+        lo_z0, hi_z0 = bot[0][2], bot[1][2]
+        lo_z1, hi_z1 = top[0][2], top[1][2]
+        if side == "bottom":
+            return [lo_z0, hi_z0, hi_z1, lo_z1]
+        return [lo_z0, lo_z1, hi_z1, hi_z0]
+
+    if hybrid_tris is not None and buckets["bottom"] and buckets["top"]:
+        buckets["bottom"] = [
+            (_canon_cyclic_outward(fv, side="bottom"), ow, c) for fv, ow, c in buckets["bottom"]
+        ]
+        buckets["top"] = [
+            (_canon_cyclic_outward(fv, side="top"), ow, c) for fv, ow, c in buckets["top"]
+        ]
+
     patch_order = ["inlet", "outlet"]
     if buckets["bottom"] or buckets["top"]:
         patch_order.extend(["bottom", "top"])
@@ -2093,7 +2621,7 @@ def write_polymesh(
         (mesh_dir / name).write_text(hdr + body + "\n", encoding="utf-8")
 
     w("points", f"{len(points)}\n(\n" + "".join(f"({x:.12g} {y:.12g} {z:.12g})\n" for x, y, z in points) + ")\n", "vectorField", "points")
-    w("faces", f"{len(all_faces)}\n(\n" + "".join("4(" + " ".join(str(i) for i in fv) + ")\n" for fv in all_faces) + ")\n", "faceList", "faces")
+    w("faces", f"{len(all_faces)}\n(\n" + "".join(f"{len(fv)}(" + " ".join(str(i) for i in fv) + ")\n" for fv in all_faces) + ")\n", "faceList", "faces")
     w("owner", f"{len(owners)}\n(\n" + "".join(f"{i}\n" for i in owners) + ")\n", "labelList", "owner",
       note=f"nPoints:{len(points)}  nCells:{n_cells}  nFaces:{len(all_faces)}  nInternalFaces:{n_internal}")
     w("neighbour", f"{len(neighs)}\n(\n" + "".join(f"{i}\n" for i in neighs) + ")\n", "labelList", "neighbour",
@@ -2132,16 +2660,26 @@ def write_polymesh(
     btxt.append(")\n")
     w("boundary", "".join(btxt), "polyBoundaryMesh", "boundary")
 
+    if cas is not None:
+        kind = "cassette_OH"
+        kind_note = "mesh: cassette_OH — three closed C metals, fluid outside every C, lid/floor walls."
+    elif passage is not None:
+        kind = "passage_OH"
+        kind_note = "mesh: Goldman/Katsanis passage O+H (SS0 vs PS0+s). Not a pitch rectangle."
+    elif hybrid_tris is not None:
+        kind = "hybrid_OH_tri"
+        kind_note = (
+            "mesh: hybrid_OH_tri — O-collar quads + TE wake/dump H + constrained Delaunay "
+            "triangles in LE/passage; one pitch true cyclic (Shewchuk triangle, not Gmsh)."
+        )
+    else:
+        kind = "body_fitted_OH"
+        kind_note = "mesh: body-fitted O-grid on the metal + Cartesian H-blocks to the pitch rectangle."
+    if n_quad_cells <= 0 and hybrid_tris is None:
+        # legacy count: all hex cells are quads extruded
+        n_quad_cells = int(n_cells)
     notes = [
-        (
-            "mesh: cassette_OH — three closed C metals, fluid outside every C, lid/floor walls."
-            if cas is not None
-            else (
-                "mesh: Goldman/Katsanis passage O+H (SS0 vs PS0+s). Not a pitch rectangle."
-                if passage is not None
-                else "mesh: body-fitted O-grid on the metal + Cartesian H-blocks to the pitch rectangle."
-            )
-        ),
+        kind_note,
         "NOT Cartesian subsetMesh stair-step.",
         f"{n_blades} blades, pitch {pitch:.6g} m, empty frontAndBack, slab {zth} m.",
         f"O n_around={n_i} (JSON n_around={n_around_req}; S/N=n_cyclic={n_cyc} E=n_outlet={n_out} W=n_inlet={n_in}) n_radial={n_rad}",
@@ -2150,12 +2688,22 @@ def write_polymesh(
         "Wall faces tagged from the O-grid j=0 ring (per-blade patches).",
         *oh_notes,
     ]
+    if kind == "hybrid_OH_tri":
+        notes.append(
+            f"counts n_tri={n_tri_cells} n_quad={n_quad_cells}; "
+            f"cyclic separationVector = one pitch ({pitch:.6g} m)."
+        )
     return MeshBuild(
         n_cells=n_cells, n_points=len(points), n_faces=len(all_faces), patches=counts,
         first_cell_m=first_cell, min_area_2d=a2, check_notes=notes, y_shift_m=y_shift,
         pitch_m=pitch, z_thick_m=zth, blade_polys=blade_polys, x_in=x_in, x_out=x_out,
         y_min=y_min, y_max=y_max, n_around=n_i, n_radial=n_rad, d_o_m=d_o,
-        mesh_kind=("cassette_OH" if cas is not None else ("passage_OH" if passage is not None else "body_fitted_OH")),
+        mesh_kind=kind,
+        n_tri=n_tri_cells,
+        n_quad=n_quad_cells if n_quad_cells else (n_cells - n_tri_cells),
+        passage_h_m=float(hybrid_stats.get("passage_h_m") or 0.0),
+        le_h_m=float(hybrid_stats.get("le_h_m") or 0.0),
+        max_size_ratio=float(hybrid_stats.get("max_size_ratio") or 0.0),
     )
 
 
@@ -2325,7 +2873,8 @@ def write_mesh_preview_png(
     ax.set_ylabel("y pitch [mm]  ↑ stack")
     ax.set_title(
         f"polyMesh wire · {mesh.mesh_kind} · n_cells={mesh.n_cells} · "
-        f"front quads={len(polys_xy)}",
+        f"front faces={len(polys_xy)}"
+        + (f" · tri={mesh.n_tri} quad={mesh.n_quad}" if mesh.n_tri else ""),
         fontsize=9,
         color="#e8e6f2",
     )

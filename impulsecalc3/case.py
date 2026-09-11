@@ -619,7 +619,7 @@ def _write_case_unlocked(
     n_b = len([k for k in mesh.patches if str(k).startswith("blade")])
     job["_n_blades_patches"] = n_b
     job["_lid_walls"] = mesh.mesh_kind == "cassette_OH"
-    job["_cyclic_pitch"] = (mesh.mesh_kind == "body_fitted_OH") and bool(mesh.patches.get("bottom"))
+    job["_cyclic_pitch"] = (mesh.mesh_kind in ("body_fitted_OH", "hybrid_OH_tri")) and bool(mesh.patches.get("bottom"))
     write_thermophysical(case_dir, job)
     write_schemes(case_dir)
     write_solution(case_dir)

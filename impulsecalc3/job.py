@@ -346,6 +346,11 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     # Streamwise LE clustering on body_fitted wall ring (1=uniform). Optional n_le raises west share.
     cfd.setdefault("le_cluster", 2.5)
     cfd.setdefault("n_le", 14)
+    # hybrid_OH_tri soft size field (m). None → scale from g_min in mesh writer.
+    cfd.setdefault("h_le", None)
+    cfd.setdefault("h_pass", None)
+    cfd.setdefault("h_far", None)
+    cfd.setdefault("growth", 1.25)
     job.setdefault("output_dir", "output")
     job.setdefault("geometry_test", False)
     g = job["geometry"]

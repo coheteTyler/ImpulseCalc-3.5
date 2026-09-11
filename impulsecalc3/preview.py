@@ -351,6 +351,14 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
     if k.get("n_outlet") in (None, ""):
         cfd["n_outlet"] = 28
     cfd["outlet_p"] = "waveTransmissive"
+    # Knobs preview CFD path: hybrid O + TE dump H + passage triangles (one pitch).
+    if k.get("mesh") not in (None, ""):
+        cfd["mesh"] = str(k["mesh"])
+    else:
+        cfd["mesh"] = "hybrid_OH_tri"
+    for src, cast in (("h_le", float), ("h_pass", float), ("h_far", float), ("growth", float)):
+        if k.get(src) not in (None, ""):
+            cfd[src] = cast(k[src])
     gas["predicted"] = True
     gas["note"] = (
         "PREDICTED station knobs. Not signed GG-to-rotor. "
