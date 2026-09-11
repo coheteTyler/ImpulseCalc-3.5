@@ -1603,15 +1603,48 @@ def _hybrid_size_m(
     h_pass: float,
     h_far: float,
     growth: float,
+    chord: float,
+    x_dense_c: float = 0.25,
+    hole_closed: list[tuple[float, float]] | None = None,
 ) -> float:
-    """Soft size field: small at LE + passage core, grow geometrically with distance."""
+    """Soft size field with axial inlet ramp + LE/passage attractors.
+
+    Far upstream of LE (x <= le_x - x_dense_c*chord) stays sparse at h_far.
+    From that station → LE, size blends smoothly toward h_le; LE/passage
+    attractors and O-outer wall distance still force fine cells where needed.
+    """
     g = max(float(growth), 1.0 + 1e-9)
     hl = max(float(h_le), 1e-9)
     hp = max(float(h_pass), 1e-9)
     hf = max(float(h_far), hp)
-    d_le = math.hypot(x - le[0], y - le[1])
-    d_p = math.hypot(x - pass_xy[0], y - pass_xy[1])
-    h = min(hf, hl * (g ** (d_le / hl)), hp * (g ** (d_p / hp)))
+    c = max(float(chord), 1e-9)
+    le_x = float(le[0])
+    le_y = float(le[1])
+    xd_c = max(float(x_dense_c), 0.0)
+    x_dense = le_x - xd_c * c
+
+    d_le = math.hypot(x - le_x, y - le_y)
+    d_p = math.hypot(x - float(pass_xy[0]), y - float(pass_xy[1]))
+    # LE stays tight; passage uses a wider length scale so mid-gap stays near h_pass
+    # without requiring a tiny isotropic ball (old 4*h_pass cap had densified everything).
+    L_pass = max(3.0 * hp, 0.08 * c)
+    h_attr = min(hl * (g ** (d_le / hl)), hp * (g ** (d_p / L_pass)), hf)
+
+    # Axial ramp (Laser mark ~0.25c upstream of LE): sparse | gradient | dense.
+    if x <= x_dense:
+        h_ax = hf
+    elif x < le_x:
+        t = (x - x_dense) / max(le_x - x_dense, 1e-15)
+        t = max(0.0, min(1.0, t))
+        t = t * t * (3.0 - 2.0 * t)  # smoothstep
+        h_ax = hf + (hl - hf) * t
+    else:
+        h_ax = hf
+
+    h = min(h_ax, h_attr)
+    # Hole/O-outer spacing comes from constrained edges + LE attractor near the
+    # collar; an isotropic wall term fights the axial inlet ramp (Laser mark).
+    _ = hole_closed
     return float(max(h, 0.45 * hl))
 
 
@@ -1679,7 +1712,40 @@ def _seed_size_field(
         rec(xm, xb, ym, yb, depth + 1)
 
     rec(x0, x1, y0, y1, 0)
-    return out
+    # Thin ONLY coarse far-field ghosts. Fine LE/passage seeds keep full density.
+    # Quadtree children from a fine parent otherwise litter the sparse inlet at <<h.
+    if not out:
+        return out
+    # Infer far scale from the largest requested sizes in this cloud.
+    hs_all = [float(size_fn(p[0], p[1])) for p in out]
+    h_cap = max(hs_all) if hs_all else 1e-3
+    coarse_cut = 0.35 * h_cap
+    fine = [p for p, h in zip(out, hs_all) if h < coarse_cut]
+    coarse = [p for p, h in zip(out, hs_all) if h >= coarse_cut]
+    scored = sorted(coarse, key=lambda p: -float(size_fn(p[0], p[1])))
+    kept_c: list[list[float]] = []
+    bins: dict[tuple[int, int], list[int]] = {}
+    for p in scored:
+        hp = float(size_fn(p[0], p[1]))
+        min_d = 0.60 * hp
+        inv = 1.0 / max(min_d, 1e-9)
+        ix, iy = int(math.floor(p[0] * inv)), int(math.floor(p[1] * inv))
+        ok = True
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for qi in bins.get((ix + dx, iy + dy), ()):
+                    q = kept_c[qi]
+                    if math.hypot(p[0] - q[0], p[1] - q[1]) < min_d:
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if not ok:
+                break
+        if ok:
+            bins.setdefault((ix, iy), []).append(len(kept_c))
+            kept_c.append(p)
+    return fine + kept_c
 
 
 def _wake_outer_row(wake: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -1728,6 +1794,7 @@ def _build_passage_triangles(
     h_pass: float,
     h_far: float,
     growth: float,
+    x_dense_c: float = 0.25,
 ) -> tuple[np.ndarray, dict[str, float], list[str]]:
     """Constrained Delaunay triangles west of dump, outside O+wake. No Gmsh."""
     try:
@@ -1750,11 +1817,23 @@ def _build_passage_triangles(
 
     le = min(poly0, key=lambda p: p[0])
     xs_m = [p[0] for p in poly0]
+    chord_x = max(max(xs_m) - min(xs_m), 1e-6)
+    x_dense = float(le[0]) - float(x_dense_c) * chord_x
     pass_xy = (0.5 * (min(xs_m) + max(xs_m)), 0.0)
 
     def size_fn(x: float, y: float) -> float:
         return _hybrid_size_m(
-            x, y, le=le, pass_xy=pass_xy, h_le=h_le, h_pass=h_pass, h_far=h_far, growth=growth
+            x,
+            y,
+            le=le,
+            pass_xy=pass_xy,
+            h_le=h_le,
+            h_pass=h_pass,
+            h_far=h_far,
+            growth=growth,
+            chord=chord_x,
+            x_dense_c=x_dense_c,
+            hole_closed=hole_closed,
         )
 
     # Matched cyclic x-nodes (true one-pitch cyclic).
@@ -1834,11 +1913,12 @@ def _build_passage_triangles(
             math.hypot(t[0, 0] - t[2, 0], t[0, 1] - t[2, 1]),
         )
 
-    # Passage cloud: mid-chord band near pass_xy
+    # Passage / LE / far-inlet clouds for size-field diagnostics
     ax, ay = pass_xy
     pass_hs: list[float] = []
     le_hs: list[float] = []
-    chord_x = max(max(xs_m) - min(xs_m), 1e-6)
+    far_hs: list[float] = []
+    ramp_hs: list[float] = []
     for t in tris:
         cx_t = float(t[:, 0].mean())
         cy_t = float(t[:, 1].mean())
@@ -1849,6 +1929,11 @@ def _build_passage_triangles(
         # LE fan cloud: forward of mid-chord, near LE x (fluid side of O).
         if cx_t < le[0] + 0.15 * chord_x and math.hypot(cx_t - le[0], cy_t - le[1]) < max(8.0 * h_le, 0.08 * chord_x):
             le_hs.append(hmed)
+        # Deep sparse inlet (well west of Laser mark) — exclude the densifying edge band.
+        if cx_t <= x_dense - 0.05 * chord_x:
+            far_hs.append(hmed)
+        elif x_dense < cx_t < float(le[0]):
+            ramp_hs.append(hmed)
 
     # Neighbor size ratio via shared edges (approx from edge length pairs at verts)
     max_ratio = 1.0
@@ -1879,10 +1964,17 @@ def _build_passage_triangles(
         if lo > 1e-16:
             max_ratio = max(max_ratio, hi / lo)
 
+    def _med_mm(vals: list[float]) -> float:
+        return float(np.median(vals) * 1e3) if vals else float("nan")
+
     stats = {
         "n_tri": float(len(tris)),
         "passage_h_m": float(np.median(pass_hs)) if pass_hs else float("nan"),
         "le_h_m": float(np.median(le_hs)) if le_hs else float("nan"),
+        "far_inlet_h_m": float(np.median(far_hs)) if far_hs else float("nan"),
+        "ramp_h_m": float(np.median(ramp_hs)) if ramp_hs else float("nan"),
+        "x_dense_m": float(x_dense),
+        "x_dense_c": float(x_dense_c),
         "max_size_ratio": float(max_ratio),
         "h_le": float(h_le),
         "h_pass": float(h_pass),
@@ -1891,13 +1983,14 @@ def _build_passage_triangles(
     }
     notes.append(
         f"hybrid triangles: n_tri={len(tris)} seeds={len(seeds)} "
-        f"h_le={h_le*1e3:.3f}mm h_pass={h_pass*1e3:.3f}mm h_far={h_far*1e3:.3f}mm growth={growth:.3g}"
+        f"h_le={h_le*1e3:.3f}mm h_pass={h_pass*1e3:.3f}mm h_far={h_far*1e3:.3f}mm "
+        f"growth={growth:.3g} x_dense_c={x_dense_c:.3g}"
     )
     notes.append(
-        f"tri size field soft; passage median h="
-        f"{(stats['passage_h_m']*1e3 if stats['passage_h_m']==stats['passage_h_m'] else float('nan')):.3f} mm, "
-        f"LE cloud h="
-        f"{(stats['le_h_m']*1e3 if stats['le_h_m']==stats['le_h_m'] else float('nan')):.3f} mm, "
+        f"tri size field axial ramp; deep-far (x<=x_dense-0.05c) median h="
+        f"{_med_mm(far_hs):.3f} mm, ramp h={_med_mm(ramp_hs):.3f} mm, "
+        f"LE cloud h={_med_mm(le_hs):.3f} mm, "
+        f"passage median h={_med_mm(pass_hs):.3f} mm, "
         f"max neighbor size ratio≈{max_ratio:.2f}"
     )
     notes.append("O-outer + dump-west are constrained edges (triangle -Y); no LE holes.")
@@ -1927,6 +2020,7 @@ def build_hybrid_oh_tri(
     h_far: float | None = None,
     growth: float = 1.25,
     g_min: float | None = None,
+    x_dense_c: float = 0.25,
 ) -> dict[str, Any]:
     """O-collar (quads) + TE wake H + dump H + passage/LE triangles. One pitch."""
     ogrid, h_all, a2, notes = build_offset_oh(
@@ -1951,8 +2045,13 @@ def build_hybrid_oh_tri(
     gm = float(g_min) if g_min is not None else 8e-4
     hp = float(h_pass) if h_pass is not None else float(min(0.12e-3, max(0.05e-3, 0.12 * gm)))
     hl = float(h_le) if h_le is not None else float(0.45 * hp)
-    hf = float(h_far) if h_far is not None else float(4.0 * hp)
+    # Far inlet: ~0.15–0.25c (1.5–3 mm class), not 4*h_pass (~0.4 mm).
+    xs_poly = [p[0] for p in poly0]
+    chord_x = max(max(xs_poly) - min(xs_poly), 1e-6) if xs_poly else 1e-2
+    hf_auto = float(max(1.5e-3, min(3.0e-3, 0.20 * chord_x)))
+    hf = float(h_far) if h_far is not None else hf_auto
     gr = max(float(growth), 1.05)
+    xd_c = max(float(x_dense_c), 0.0)
     tris, stats, tnotes = _build_passage_triangles(
         ogrid=ogrid,
         wake=wake,
@@ -1965,6 +2064,7 @@ def build_hybrid_oh_tri(
         h_pass=hp,
         h_far=hf,
         growth=gr,
+        x_dense_c=xd_c,
     )
     notes = list(notes) + tnotes
     notes.append(
@@ -2018,6 +2118,7 @@ class MeshBuild:
     n_quad: int = 0
     passage_h_m: float = 0.0
     le_h_m: float = 0.0
+    far_inlet_h_m: float = 0.0
     max_size_ratio: float = 0.0
 
 
@@ -2057,6 +2158,7 @@ def write_polymesh(
     h_pass_knob = cfd.get("h_pass")
     h_far_knob = cfd.get("h_far")
     growth_knob = float(cfd.get("growth") or 1.25)
+    x_dense_c_knob = float(cfd.get("x_dense_c") if cfd.get("x_dense_c") not in (None, "") else 0.25)
     hybrid_tris: np.ndarray | None = None
     hybrid_stats: dict[str, float] = {}
     n_tri_cells = 0
@@ -2207,6 +2309,7 @@ def write_polymesh(
             h_far=(float(h_far_knob) if h_far_knob not in (None, "") else None),
             growth=growth_knob,
             g_min=float(gap0["g_min"]),
+            x_dense_c=x_dense_c_knob,
         )
         ogrid = hy["ogrid"]
         h_blocks = hy["h_blocks"]
@@ -2703,6 +2806,7 @@ def write_polymesh(
         n_quad=n_quad_cells if n_quad_cells else (n_cells - n_tri_cells),
         passage_h_m=float(hybrid_stats.get("passage_h_m") or 0.0),
         le_h_m=float(hybrid_stats.get("le_h_m") or 0.0),
+        far_inlet_h_m=float(hybrid_stats.get("far_inlet_h_m") or 0.0),
         max_size_ratio=float(hybrid_stats.get("max_size_ratio") or 0.0),
     )
 

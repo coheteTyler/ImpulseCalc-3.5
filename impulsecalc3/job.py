@@ -351,6 +351,8 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     cfd.setdefault("h_pass", None)
     cfd.setdefault("h_far", None)
     cfd.setdefault("growth", 1.25)
+    # Axial dense-start station upstream of LE (fraction of chord); hybrid size ramp.
+    cfd.setdefault("x_dense_c", 0.25)
     job.setdefault("output_dir", "output")
     job.setdefault("geometry_test", False)
     g = job["geometry"]

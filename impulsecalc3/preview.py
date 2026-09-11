@@ -356,7 +356,13 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         cfd["mesh"] = str(k["mesh"])
     else:
         cfd["mesh"] = "hybrid_OH_tri"
-    for src, cast in (("h_le", float), ("h_pass", float), ("h_far", float), ("growth", float)):
+    for src, cast in (
+        ("h_le", float),
+        ("h_pass", float),
+        ("h_far", float),
+        ("growth", float),
+        ("x_dense_c", float),
+    ):
         if k.get(src) not in (None, ""):
             cfd[src] = cast(k[src])
     gas["predicted"] = True
