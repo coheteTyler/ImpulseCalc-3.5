@@ -258,7 +258,7 @@ def run_job(
         # Never renumber on skip_solve: time-dir fields would map to the wrong cells.
         if not reuse:
             run_foam(["renumberMesh", "-overwrite"], cwd=case_dir, log_name="log.renumberMesh", env=env)
-        rc_m = run_foam(["checkMesh"], cwd=case_dir, log_name="log.checkMesh", env=env)
+        rc_m = run_foam(["checkMesh", "-meshQuality"], cwd=case_dir, log_name="log.checkMesh", env=env)
         try:
             log_m = read_foam_log(case_dir, "log.checkMesh", "checkMesh")
         except FoamLogMissing as exc:
@@ -304,6 +304,38 @@ def run_job(
             else:
                 check["note"] = "Mesh OK (strict)"
             mesh_usable = bool(flags["mesh_ok"])
+            # HOH + negative/open: one cassette_OH rewrite. Do not loop. Do not paint HOH.
+            if (
+                str(getattr(mesh, "mesh_kind", "") or "") == "hoh"
+                and (not vol_ok)
+                and (not reuse)
+            ):
+                job.setdefault("cfd", {})["mesh"] = "cassette_OH"
+                job.setdefault("geometry", {})["n_blades_cascade"] = int(
+                    job["geometry"].get("n_blades_cascade") or 3
+                )
+                job["cfd"]["constant_passage_width"] = False
+                job["geometry"]["constant_passage_width"] = False
+                mesh, t_end = write_case(case_dir, job, ml, times, spec)
+                run_foam(["renumberMesh", "-overwrite"], cwd=case_dir, log_name="log.renumberMesh", env=env)
+                rc_m = run_foam(["checkMesh", "-meshQuality"], cwd=case_dir, log_name="log.checkMesh", env=env)
+                log_m = read_foam_log(case_dir, "log.checkMesh", "checkMesh")
+                check = parse_checkmesh(log_m)
+                check["rc"] = int(rc_m)
+                check["log"] = str(case_dir / "log.checkMesh")
+                check["kind"] = mesh.mesh_kind
+                check["note"] = "HOH negative/open cells; one cassette_OH fallback"
+                nfail = int(check.get("failed_checks") or 0)
+                flags["mesh_ok"] = bool(check.get("mesh_ok_strict")) and nfail == 0
+                vol_ok = (not check.get("open_cells")) and not check.get("negative_volume") and (
+                    check.get("min_volume") is None or float(check["min_volume"]) > 0
+                )
+                errors[:] = [e for e in errors if not str(e).startswith("checkMesh")]
+                if not vol_ok:
+                    errors.append("checkMesh: negative/open cells")
+                if nfail:
+                    errors.append(f"checkMesh failed {nfail} checks (hard fail; not a painted cascade)")
+                mesh_usable = bool(flags["mesh_ok"]) and vol_ok
         if not skip_solve and mesh_usable:
             rc_s = run_foam(["rhoCentralFoam"], cwd=case_dir, log_name="log.rhoCentralFoam", env=env)
             try:

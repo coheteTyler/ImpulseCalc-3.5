@@ -250,9 +250,11 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
     if drv in ("pitch", "spacing", "s_mm"):
         g["packing_driver"] = "pitch"
     base["geometry"] = g
-    # Constant passage width: Goldman concentric walls (hl slaved; pitch if g_pass set).
-    _cpw = k.get("constant_passage_width")
-    if _cpw in (True, 1, "1", "true", "True", "yes", "on"):
+    # Const. passage OFF the load path (passage.py is dead). Green button must not fire this write.
+    k["constant_passage_width"] = False
+    g["constant_passage_width"] = False
+    _cpw = False
+    if False and _cpw in (True, 1, "1", "true", "True", "yes", "on"):
         try:
             base, _cpw_rep = apply_constant_passage_width(base)
             g = base["geometry"]

@@ -742,6 +742,9 @@ def _complete_job(phase: str, error: str | None = None, *, mesh: bool = False) -
 def _run_mesh(knobs: dict[str, Any]) -> dict[str, Any]:
     from .run import run_job
 
+    knobs = dict(knobs or {})
+    knobs["constant_passage_width"] = False
+    knobs["use_passage"] = False
     job = knobs_to_job(knobs)
     g = job.setdefault("geometry", {})
     cfd = job.setdefault("cfd", {})

@@ -3,7 +3,7 @@
 Index convention (2-D weld then extrude):
     i_z0(k) = k          # z = 0
     i_z1(k) = k + N      # z = Z
-(x, y) → k via rounding 1e-12 so TFI seams share nodes.
+(x, y) → k via rounding 1e-9 so TFI seams share nodes.
 """
 
 from __future__ import annotations
@@ -31,8 +31,64 @@ def write_foam_header(cls: str, obj: str) -> str:
     )
 
 
-def weld_xy(points_xy, tol: float = 1e-12) -> tuple[np.ndarray, np.ndarray]:
-    """Unique (x,y) and inverse index. Rounding 1e-12."""
+WELD_TOL = 1e-9
+
+
+def _cross2(u, v) -> float:
+    return float(u[0] * v[1] - u[1] * v[0])
+
+
+def orient_quads(xy, quads):
+    """CCW 2-D quads. Drop degenerates. Clockwise → (a,d,c,b)."""
+    pts = np.asarray(xy, dtype=float).reshape(-1, 2)
+    out = []
+    for q in quads:
+        ia, ib, ic, id_ = (int(v) for v in q)
+        a, b, c, d = pts[ia], pts[ib], pts[ic], pts[id_]
+        area = 0.5 * (_cross2(b - a, d - a) + _cross2(c - b, d - c))
+        if abs(area) < 1e-16:
+            continue
+        if area < 0:
+            out.append((ia, id_, ic, ib))
+        else:
+            out.append((ia, ib, ic, id_))
+    return out
+
+
+def cell_volumes(points_xyz, faces, owner, neighbour):
+    """Signed hex volumes from face pyramids. Owner Sf points owner→neighbour."""
+    pts = np.asarray(points_xyz, dtype=float)
+    n_own = [int(i) for i in owner]
+    n_nei = [int(i) for i in neighbour]
+    if not n_own:
+        return np.zeros(0)
+    n_cells = 1 + max(n_own + n_nei)
+    vol = np.zeros(n_cells, dtype=float)
+    n_int = len(n_nei)
+
+    def face_cf_sf(f):
+        xyz = pts[[int(i) for i in f]]
+        c = xyz.mean(axis=0)
+        sf = np.zeros(3)
+        n = len(xyz)
+        for i in range(n):
+            sf += np.cross(xyz[i] - c, xyz[(i + 1) % n] - c)
+        sf *= 0.5
+        return c, sf
+
+    for f, o, n in zip(faces[:n_int], n_own[:n_int], n_nei):
+        c, sf = face_cf_sf(f)
+        d = float(np.dot(c, sf) / 3.0)
+        vol[int(o)] += d
+        vol[int(n)] -= d
+    for f, o in zip(faces[n_int:], n_own[n_int:]):
+        c, sf = face_cf_sf(f)
+        vol[int(o)] += float(np.dot(c, sf) / 3.0)
+    return vol
+
+
+def weld_xy(points_xy, tol: float = WELD_TOL) -> tuple[np.ndarray, np.ndarray]:
+    """Unique (x,y) and inverse index. Rounding 1e-9."""
     pts = np.asarray(points_xy, dtype=float).reshape(-1, 2)
     key = np.round(pts / tol) * tol
     uniq: list[tuple[float, float]] = []
@@ -169,7 +225,10 @@ def extrude_and_classify(
     patch_faces: dict[str, list[list[int]]] = {n: [] for n in PATCH_ORDER}
     leftover = []
     for key, (ci, (e0, e1)) in boundary_edges.items():
-        name = edge_to_patch.get(key, "blades")
+        name = edge_to_patch.get(key)
+        if name is None:
+            leftover.append("skip")
+            continue
         face = _side_face(e0, e1, n2)
         if name not in patch_faces:
             patch_faces[name] = []
@@ -229,12 +288,17 @@ def _assemble_lists(pts, quads, n2, n_cells, ccs, meta, patches_2d, z_thick):
             edge_to_patch[(min(int(a), int(b)), max(int(a), int(b)))] = name
 
     patch_items: dict[str, list[tuple[list[int], int]]] = {n: [] for n in PATCH_ORDER}
+    n_leftover = 0
     for key, (ci, (e0, e1)) in edge_owner.items():
-        name = edge_to_patch.get(key, "blades")
+        name = edge_to_patch.get(key)
+        if name is None:
+            n_leftover += 1
+            continue
         if name not in patch_items:
             patch_items[name] = []
         face = [e0, e1, e1 + n2, e0 + n2]
         patch_items[name].append((face, ci))
+    meta["n_leftover_untagged"] = n_leftover
 
     for ci, q in enumerate(quads):
         a, b, c, d = (int(v) for v in q)
@@ -287,11 +351,8 @@ def write_polymesh(
     """Write constant/polyMesh. 2-D quad path or pre-extruded lists."""
     out = Path(out_dir)
     mesh = out / "constant" / "polyMesh"
-    mesh.mkdir(parents=True, exist_ok=True)
 
     if points_xyz is None:
-        built = extrude_and_classify(points_xy, quads, patches or {}, z_thick)
-        # extrude_and_classify currently calls _assemble which needs points
         xy, inv = weld_xy(points_xy)
         n_in = len(np.asarray(points_xy).reshape(-1, 2))
         qds = list(quads)
@@ -299,6 +360,9 @@ def write_polymesh(
         if n_in != len(xy):
             qds = [tuple(int(inv[int(i)]) for i in q) for q in quads]
             p2d = {n: [(int(inv[int(a)]), int(inv[int(b)])) for a, b in ed] for n, ed in p2d.items()}
+        qds = orient_quads(xy, qds)
+        if not qds:
+            raise RuntimeError("HOH: all quads degenerate after orient")
         pts, _, _, _, ccs, meta = extrude_quads(xy, qds, z_thick)
         built = _assemble_lists(pts, qds, meta["n2"], meta["n_cells"], ccs, meta, p2d, z_thick)
         points_xyz = built["points_xyz"] if built["points_xyz"] is not None else pts
@@ -306,10 +370,19 @@ def write_polymesh(
         owner = built["owner"]
         neighbour = built["neighbour"]
         patches_dict = built["patches"]
-        n_cells = built["n_cells"]
+        n_cells = len(qds)
+        built["n_cells"] = n_cells
+        vols = cell_volumes(points_xyz, faces, owner, neighbour)
+        vmin = float(np.min(vols)) if len(vols) else -1.0
+        if vmin <= 0.0:
+            raise RuntimeError(
+                f"HOH hex volume <= 0 (min={vmin:.3e} n={len(vols)} leftover={meta.get('n_leftover_untagged')}). "
+                "Refusing to write polyMesh."
+            )
     else:
         n_cells = 1 + max(owner)
 
+    mesh.mkdir(parents=True, exist_ok=True)
     points_xyz = np.asarray(points_xyz, dtype=float)
     n_pts = len(points_xyz)
     n_faces = len(faces)

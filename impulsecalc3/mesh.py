@@ -2672,38 +2672,44 @@ def write_polymesh(
         from .hoh_mesher import build_hoh_mesh
         from .meanline import compute_meanline
         dest = Path(case_dir)
-        res = build_hoh_mesh(job, compute_meanline(job), n_blades=3, tier="balanced", out_dir=dest)
-        if not getattr(res, "solvable", False):
-            raise RuntimeError(
-                f"HOH not solvable n_cells={res.n_cells} maxNO={res.max_nonortho_deg} "
-                f"p50={ {k: (res.gates.get('where') or {}).get(k) for k in ('inlet','dump','LE','TE','passage')} }"
-            )
-        pitch_v = float(pitch)
-        polys = []
         try:
-            from .geometry import profile_from_job as _pfj
-            base = list(_pfj(job, spec))
-            for k in range(3):
-                polys.append([(x, y + k * pitch_v) for x, y in base])
-        except Exception:
+            res = build_hoh_mesh(job, compute_meanline(job), n_blades=3, tier="balanced", out_dir=dest)
+            if not getattr(res, "solvable", False):
+                raise RuntimeError(
+                    f"HOH not solvable n_cells={res.n_cells} maxNO={res.max_nonortho_deg}"
+                )
+            pitch_v = float(pitch)
             polys = []
-        notes = list(res.notes)
-        notes.append(f"HOH solvable={res.solvable} success={res.success} maxNO={res.max_nonortho_deg:.2f} skew={res.max_skew:.2f}")
-        return MeshBuild(
-            n_cells=res.n_cells,
-            n_points=0,
-            n_faces=0,
-            patches={"inlet": [0], "outlet": [0], "bottom": [0], "top": [0], "blades": [0], "frontAndBack": [0]},
-            first_cell_m=0.0,
-            min_area_2d=0.0,
-            check_notes=notes,
-            pitch_m=pitch_v,
-            mesh_kind="hoh",
-            n_quad=res.n_cells,
-            blade_polys=polys,
-            y_min=min((p[1] for poly in polys for p in poly), default=0.0),
-            y_max=max((p[1] for poly in polys for p in poly), default=0.0) + 0.0,
-        )
+            try:
+                from .geometry import profile_from_job as _pfj
+                base = list(_pfj(job, spec))
+                for k in range(3):
+                    polys.append([(x, y + k * pitch_v) for x, y in base])
+            except Exception:
+                polys = []
+            notes = list(res.notes)
+            notes.append(f"HOH solvable={res.solvable} success={res.success} maxNO={res.max_nonortho_deg:.2f} skew={res.max_skew:.2f}")
+            return MeshBuild(
+                n_cells=res.n_cells,
+                n_points=0,
+                n_faces=0,
+                patches={"inlet": [0], "outlet": [0], "bottom": [0], "top": [0], "blades": [0], "frontAndBack": [0]},
+                first_cell_m=0.0,
+                min_area_2d=0.0,
+                check_notes=notes,
+                pitch_m=pitch_v,
+                mesh_kind="hoh",
+                n_quad=res.n_cells,
+                blade_polys=polys,
+                y_min=min((p[1] for poly in polys for p in poly), default=0.0),
+                y_max=max((p[1] for poly in polys for p in poly), default=0.0) + 0.0,
+            )
+        except Exception as exc:
+            # Negative hex volumes / leftover seams. One cassette_OH fallback. Do not loop HOH.
+            job["_hoh_fallback"] = f"HOH writer refuse → cassette_OH once: {exc}"
+            cfd["mesh"] = "cassette_OH"
+            g["n_blades_cascade"] = 3
+            n_blades = 3
     x_in = -float(cfd["x_up_c"]) * spec.chord_m
     x_out = spec.chord_m + float(cfd["x_dn_c"]) * spec.chord_m
     n_in = int(cfd["n_inlet"])
@@ -2757,7 +2763,7 @@ def write_polymesh(
     fam0 = str((job.get("geometry") or {}).get("profile_family") or "")
     # Nested C is legal when g_min>0 (solids miss). Cassette/H-O-H hosts yspan>=s.
     # Only refuse true intersection. Never flatten outer arc to force a strip fit.
-    use_passage = False
+    use_passage = False  # Const. passage OFF. passage.py is dead. Ignore green button.
     passage = None
     cas = None
     y_shift = 0.0
@@ -2769,8 +2775,10 @@ def write_polymesh(
             "Refuse mesh/solve."
         )
     d_o_gate = min(0.00045, 0.06 * spec.chord_m)
+    want_cassette = str(cfd.get("mesh") or "").strip() in ("cassette_OH", "cassette") or bool(job.get("_hoh_fallback"))
     # Goldman body_fitted_OH: always strip+cyclics — never cassette_OH.
-    if (not use_hybrid) and (not use_body) and yspan + 2.0 * d_o_gate >= float(pitch):
+    # HOH volume-fail fallback MUST land on cassette even if yspan < pitch.
+    if want_cassette or ((not use_hybrid) and (not use_body) and yspan + 2.0 * d_o_gate >= float(pitch)):
         cas = build_cassette_oh(
             poly0,
             pitch=pitch,
@@ -3435,6 +3443,7 @@ def write_polymesh(
         f"y_shift to centre blade in pitch: {y_shift:.6g} m (rigid; metal angles unchanged).",
         "Wall faces tagged from the O-grid j=0 ring (per-blade patches).",
         *oh_notes,
+        *([job["_hoh_fallback"]] if job.get("_hoh_fallback") else []),
     ]
     if kind == "hybrid_OH_tri":
         notes.append(
