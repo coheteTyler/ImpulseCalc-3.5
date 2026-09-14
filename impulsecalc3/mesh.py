@@ -682,6 +682,65 @@ def tfi_block(
     return pts
 
 
+def tfi_block_eta_pack(
+    south: np.ndarray,
+    north: np.ndarray,
+    west: np.ndarray,
+    east: np.ndarray,
+    r: float = 1.0,
+    dense_at: str = "north",
+) -> np.ndarray:
+    """TFI with geometric η packing toward north (O) or south."""
+    nx = south.shape[0] - 1
+    ny = west.shape[0] - 1
+    if north.shape[0] != nx + 1 or east.shape[0] != ny + 1:
+        raise RuntimeError(
+            f"TFI edge mismatch south={south.shape} north={north.shape} "
+            f"west={west.shape} east={east.shape}"
+        )
+    r = max(float(r), 1.0)
+    pts = np.zeros((nx + 1, ny + 1, 2), dtype=float)
+    for i in range(nx + 1):
+        xi = 0.0 if nx == 0 else i / nx
+        for j in range(ny + 1):
+            if ny == 0:
+                eta = 0.0
+            elif r <= 1.0 + 1e-12:
+                eta = j / ny
+            elif dense_at == "north":
+                # pack toward eta=1
+                eta = float(_stretch(j, ny, r))
+            else:
+                eta = float(1.0 - _stretch(ny - j, ny, r))
+            # Boundary west/east already include packing if caller packed them;
+            # blend with parametric edges at the same eta via linear edge eval.
+            wj = (1.0 - eta) * west[0] + eta * west[-1]
+            ej = (1.0 - eta) * east[0] + eta * east[-1]
+            # Prefer actual west/east node spacing when j maps 1:1
+            if r <= 1.0 + 1e-12 or True:
+                # remap j onto packed index for west/east samples
+                if r > 1.0 + 1e-12 and dense_at == "north":
+                    jj = float(_stretch(j, ny, r)) * ny
+                elif r > 1.0 + 1e-12:
+                    jj = float(1.0 - _stretch(ny - j, ny, r)) * ny
+                else:
+                    jj = float(j)
+                j0 = int(np.floor(jj)); j1 = min(j0 + 1, ny); tj = jj - j0
+                wj = (1.0 - tj) * west[j0] + tj * west[j1]
+                ej = (1.0 - tj) * east[j0] + tj * east[j1]
+            pts[i, j] = (
+                (1 - eta) * south[i]
+                + eta * north[i]
+                + (1 - xi) * wj
+                + xi * ej
+                - (1 - xi) * (1 - eta) * south[0]
+                - xi * (1 - eta) * south[-1]
+                - (1 - xi) * eta * north[0]
+                - xi * eta * north[-1]
+            )
+    return pts
+
+
 def resample_closed(poly: list[tuple[float, float]], n: int) -> np.ndarray:
     """n points around a closed polygon, even arc-length, no duplicate wrap."""
     pts = poly[:-1] if poly and poly[0] == poly[-1] else list(poly)
@@ -827,6 +886,177 @@ def _lin_pack_end(p0, p1, n_seg: int, r: float) -> np.ndarray:
     return (1.0 - t) * p0[None, :] + t * p1[None, :]
 
 
+def _lin_pack_start(p0, p1, n_seg: int, r: float) -> np.ndarray:
+    """Polyline p0→p1 with geometric pack toward p0 (dense at start / O side)."""
+    return _lin_pack_end(p1, p0, n_seg, r)[::-1].copy()
+
+
+def _y_on_polyline_at_x(poly: np.ndarray, x: float) -> float:
+    """Linear y(x) on a polyline assumed mostly monotone in x."""
+    p = np.asarray(poly, dtype=float)
+    x = float(x)
+    if p.shape[0] < 2:
+        return float(p[0, 1])
+    # exact hits
+    for i in range(p.shape[0]):
+        if abs(float(p[i, 0]) - x) <= 1e-14:
+            return float(p[i, 1])
+    best = None
+    for i in range(p.shape[0] - 1):
+        x0, y0 = float(p[i, 0]), float(p[i, 1])
+        x1, y1 = float(p[i + 1, 0]), float(p[i + 1, 1])
+        if (x0 - x) * (x1 - x) <= 0.0 and abs(x1 - x0) > 1e-16:
+            t = (x - x0) / (x1 - x0)
+            return y0 + t * (y1 - y0)
+        mid = 0.5 * (x0 + x1)
+        d = abs(mid - x)
+        if best is None or d < best[0]:
+            best = (d, y0 + ((x - x0) / (x1 - x0 + 1e-30)) * (y1 - y0))
+    return float(best[1]) if best else float(p[0, 1])
+
+
+def _ray_block_vertical(
+    y_lo_of_x,
+    y_hi_of_x,
+    xs: np.ndarray,
+    n_fill: int,
+    *,
+    pack_r: float = 1.0,
+    dense_at: str = "lo",
+) -> np.ndarray:
+    """H-block with vertical rays at xs. j=0 at y_lo, j=-1 at y_hi.
+
+    dense_at 'lo' packs toward the lower edge (O/mouth); 'hi' toward upper.
+    """
+    xs = np.asarray(xs, dtype=float).reshape(-1)
+    n = int(xs.shape[0])
+    pts = np.zeros((n, n_fill + 1, 2), dtype=float)
+    r = max(float(pack_r), 1.0)
+    def _y_at(spec, i, x):
+        if callable(spec):
+            return float(spec(float(x)))
+        if isinstance(spec, (int, float, np.floating)):
+            return float(spec)
+        return float(np.asarray(spec, dtype=float).reshape(-1)[i])
+
+    for i, x in enumerate(xs):
+        y0 = _y_at(y_lo_of_x, i, x)
+        y1 = _y_at(y_hi_of_x, i, x)
+        p0 = np.array([x, y0], dtype=float)
+        p1 = np.array([x, y1], dtype=float)
+        if r > 1.0 + 1e-12 and dense_at == "lo":
+            line = _lin_pack_start(p0, p1, n_fill, r)
+        elif r > 1.0 + 1e-12 and dense_at == "hi":
+            line = _lin_pack_end(p0, p1, n_fill, r)
+        else:
+            line = _lin(p0, p1, n_fill)
+        pts[i] = line
+    return pts
+
+
+
+def _ray_block_horizontal(
+    edge_lo_x,
+    x_hi_of_y,
+    ys: np.ndarray,
+    n_seg: int,
+    *,
+    pack_r: float = 1.0,
+    dense_at: str = "hi",
+) -> np.ndarray:
+    """H-block with horizontal rays at ys. i=0 at x_lo, i=-1 at x_hi.
+
+    edge_lo_x: callable/array/float for x at each y on the low-x side.
+    x_hi_of_y: callable/array/float for high-x side.
+    dense_at 'hi' packs toward high-x (O); 'lo' toward low-x.
+    Returns pts[n_seg+1, len(ys), 2].
+    """
+    ys = np.asarray(ys, dtype=float).reshape(-1)
+    n = int(ys.shape[0])
+    pts = np.zeros((n_seg + 1, n, 2), dtype=float)
+    r = max(float(pack_r), 1.0)
+
+    def _x_at(spec, j, y):
+        if callable(spec):
+            return float(spec(float(y)))
+        if isinstance(spec, (int, float, np.floating)):
+            return float(spec)
+        return float(np.asarray(spec, dtype=float).reshape(-1)[j])
+
+    for j, y in enumerate(ys):
+        x0 = _x_at(edge_lo_x, j, y)
+        x1 = _x_at(x_hi_of_y, j, y)
+        p0 = np.array([x0, y], dtype=float)
+        p1 = np.array([x1, y], dtype=float)
+        if r > 1.0 + 1e-12 and dense_at == "hi":
+            line = _lin_pack_end(p0, p1, n_seg, r)
+        elif r > 1.0 + 1e-12 and dense_at == "lo":
+            line = _lin_pack_start(p0, p1, n_seg, r)
+        else:
+            line = _lin(p0, p1, n_seg)
+        pts[:, j, :] = line
+    return pts
+
+
+
+def _ray_block_sheared(
+    edge_o: np.ndarray,
+    x_target: float,
+    n_seg: int,
+    beta_deg: float,
+    *,
+    pack_r: float = 1.0,
+    dense_at_o: bool = True,
+    toward_inlet: bool = True,
+) -> np.ndarray:
+    """Sheared H-block: each O node maps to x_target along ±W(β).
+
+    Returns pts[n_seg+1, n_o, 2] with i=0 at far (x_target side) when toward_inlet
+    else i=0 at O; O column is always the dense side when dense_at_o.
+    """
+    from .oh_shock import sheared_inlet_edge, sheared_outlet_point
+
+    edge_o = np.asarray(edge_o, dtype=float)
+    n_o = int(edge_o.shape[0])
+    pts = np.zeros((n_seg + 1, n_o, 2), dtype=float)
+    r = max(float(pack_r), 1.0)
+    for j in range(n_o):
+        p_o = edge_o[j]
+        if toward_inlet:
+            p_far = sheared_inlet_edge(p_o, x_target, beta_deg)
+        else:
+            p_far = sheared_outlet_point(p_o, x_target, beta_deg)
+        if dense_at_o and r > 1.0 + 1e-12:
+            # i=0 at far, i=-1 at O (pack toward O)
+            line = _lin_pack_end(p_far, p_o, n_seg, r)
+        elif dense_at_o:
+            line = _lin(p_far, p_o, n_seg)
+        else:
+            line = _lin(p_o, p_far, n_seg)
+        pts[:, j, :] = line
+    return pts
+
+def smooth_rect_block(pts: np.ndarray, n_iter: int = 40, omega: float = 0.45) -> np.ndarray:
+    """Laplacian smooth of interior nodes; boundary edges stay put."""
+    cur = np.asarray(pts, dtype=float).copy()
+    if cur.ndim != 3 or cur.shape[0] < 3 or cur.shape[1] < 3:
+        return cur
+    nx, ny = cur.shape[0], cur.shape[1]
+    for _ in range(int(n_iter)):
+        new = cur.copy()
+        for i in range(1, nx - 1):
+            for j in range(1, ny - 1):
+                new[i, j] = (1.0 - omega) * cur[i, j] + omega * 0.25 * (
+                    cur[i - 1, j] + cur[i + 1, j] + cur[i, j - 1] + cur[i, j + 1]
+                )
+        if min_cell_area_2d_rect(new) <= 0:
+            return cur
+        cur = new
+    return cur
+
+
+
+
 def _force_mono_x(pts: np.ndarray) -> np.ndarray:
     xs = np.asarray(pts[:, 0], dtype=float).copy()
     for i in range(1, xs.shape[0]):
@@ -887,7 +1117,8 @@ def _down_u_splits(ring: np.ndarray):
     kE = int(np.argmax(xs + ys))
     kW = int(np.argmax(-xs + ys))
     ymax = float(ys.max())
-    ks = np.where(ys >= 0.92 * ymax)[0]
+    # Wider high-band: shoulders → north (vertical rays) not west_up (horizontal ~70° NO)
+    ks = np.where(ys >= 0.72 * ymax)[0]
     if ks.size >= 3:
         kE_top, kW_top = int(ks[0]), int(ks[-1])
     else:
@@ -954,16 +1185,118 @@ def _untangle_block(hb: np.ndarray, n_pass: int = 10) -> np.ndarray:
     return cur
 
 
-def _pos_block(hb: np.ndarray, name: str) -> np.ndarray:
+
+def _trim_edge_steep(edge: np.ndarray, max_dx_dy: float = 1.1, from_start: bool = True) -> np.ndarray:
+    """Drop tip segments whose |dx/dy| exceeds max_dx_dy (keeps stem for horizontal H)."""
+    e = np.asarray(edge, dtype=float)
+    if e.shape[0] < 4:
+        return e
+    if not from_start:
+        e = e[::-1].copy()
+    keep = 0
+    for i in range(e.shape[0] - 1):
+        dx = abs(float(e[i + 1, 0] - e[i, 0]))
+        dy = abs(float(e[i + 1, 1] - e[i, 1]))
+        if dy < 1e-16 or (dx / dy) > max_dx_dy:
+            keep = i + 1
+            continue
+        break
+    out = e[keep:]
+    if out.shape[0] < 3:
+        out = e[max(0, e.shape[0] // 5):]
+    if not from_start:
+        out = out[::-1].copy()
+    return out
+
+
+def _join_xs(*arrs: np.ndarray) -> np.ndarray:
+    """Concatenate increasing x-arrays, dropping shared endpoints."""
+    chunks: list[np.ndarray] = []
+    for a in arrs:
+        a = np.asarray(a, dtype=float).reshape(-1)
+        if a.size == 0:
+            continue
+        if not chunks:
+            chunks.append(a)
+            continue
+        if abs(float(a[0]) - float(chunks[-1][-1])) <= 1e-12:
+            chunks.append(a[1:])
+        else:
+            chunks.append(a)
+    return np.concatenate(chunks) if chunks else np.zeros(0, dtype=float)
+
+
+def _interp_arc_xs(pts: np.ndarray, xs: np.ndarray) -> np.ndarray:
+    """Interpolate an open polyline onto xs (vertical projection). Monotone-x."""
+    p = np.asarray(pts, dtype=float)
+    xs = np.asarray(xs, dtype=float).reshape(-1)
+    if p.shape[0] < 2:
+        return np.column_stack([xs, np.full(xs.shape[0], float(p[0, 1]))])
+    if float(p[0, 0]) > float(p[-1, 0]):
+        p = p[::-1].copy()
+    x = p[:, 0].copy()
+    y = p[:, 1].copy()
+    for i in range(1, x.shape[0]):
+        if x[i] <= x[i - 1]:
+            x[i] = x[i - 1] + 1e-12
+    ys = np.interp(xs, x, y)
+    return np.column_stack([xs, ys])
+
+
+def _outer_dxdy_corners(outer_idx: list[int], ring: np.ndarray, max_dx_dy: float = 1.0):
+    """Walk outer Rt→Lt. Return k_SE, k_E, k_W, k_SW into outer_idx (45° |dx|=|dy|).
+
+    Pattern: tip-wrap (shallow) → right stem (steep) → back (shallow) → left stem
+    (steep) → tip-wrap. Corners are the four steepness transitions.
+    """
+    n = len(outer_idx)
+    if n < 8:
+        return 1, n // 4, (3 * n) // 4, n - 2
+    dxdy = []
+    for k in range(n - 1):
+        d = ring[outer_idx[k + 1]] - ring[outer_idx[k]]
+        dxdy.append(abs(float(d[0])) / max(abs(float(d[1])), 1e-16))
+    steep = np.array([v <= max_dx_dy for v in dxdy], dtype=bool)
+    trans: list[int] = []
+    for k in range(1, steep.shape[0]):
+        if bool(steep[k]) != bool(steep[k - 1]):
+            trans.append(k)
+    if len(trans) >= 4:
+        # Prefer the first four: SE, E (back start), W (back end), SW
+        return int(trans[0]), int(trans[1]), int(trans[2]), int(trans[3])
+    # Fallback: 45° via argmax(x+y) / argmax(-x+y) on the back, plus 5% tip trim
+    xs = ring[outer_idx, 0]
+    ys = ring[outer_idx, 1]
+    kE = int(np.argmax(xs + ys))
+    kW = int(np.argmax(-xs + ys))
+    kSE = max(2, n // 20)
+    kSW = min(n - 3, n - n // 20)
+    if not (kSE < kE < kW < kSW):
+        kSE, kE, kW, kSW = 2, n // 4, (3 * n) // 4, n - 3
+    return kSE, kE, kW, kSW
+
+
+def _pos_block(hb: np.ndarray, name: str, keep_edges: bool = False) -> np.ndarray:
     """Orientation with strictly positive min 2D area. No pinched-quad waiver.
 
     Do not Laplacian-untangle a block that is already positive: thin north
     layers (offset back almost on the cyclic) invert under that smoother.
+    keep_edges: do not reverse i/j (shared O/H edges must stay put).
     """
     amin0 = min_cell_area_2d_rect(hb)
     if amin0 > 0:
         return hb
     hb = _untangle_block(hb)
+    if min_cell_area_2d_rect(hb) > 0:
+        return hb
+    if keep_edges:
+        # i-flip only: keep j=0 / j=-1 as the O and cyclic edges.
+        cands = (hb, hb[::-1, :, :].copy())
+        best = max(cands, key=min_cell_area_2d_rect)
+        amin = min_cell_area_2d_rect(best)
+        if amin <= 0:
+            raise RuntimeError(f"folded H-block {name} min_area={amin:.3e}")
+        return best
     cands = (hb, hb[:, ::-1, :].copy(), hb[::-1, :, :].copy(), hb[::-1, ::-1, :].copy())
     best = max(cands, key=min_cell_area_2d_rect)
     amin = min_cell_area_2d_rect(best)
@@ -1042,6 +1375,7 @@ def te_wake_block(
     return _pos_block(hb, "te_wake")
 
 
+
 def _snap_points(hb: np.ndarray, mapping: list[tuple[np.ndarray, np.ndarray]], eps: float = 1e-7) -> np.ndarray:
     """Move any block node near src onto dst (TE → chord projection)."""
     out = np.asarray(hb, dtype=float).copy()
@@ -1069,12 +1403,18 @@ def build_offset_oh(
     n_out_x: int | None = None,
     le_cluster: float = 1.0,
     inlet_stretch: float | None = None,
+    dump_xs: np.ndarray | None = None,
+    dump_rx: float | None = None,
+    beta1_deg: float = 65.0,
+    beta2_deg: float = -65.0,
 ) -> tuple[np.ndarray, list[np.ndarray], float, list[str]]:
-    """Offset O-collar + cavity TFI + outer TFI H-blocks to the pitch rectangle.
+    """Offset O-collar + axis-aligned H-blocks to the pitch rectangle.
 
-    Long pointed stems make AABB-morph O-cells cross the U (duplicate verts,
-    zero-area faces, 1e145 skew). The cavity is its own H-block; outer H-blocks
-    only see the convex back and the mouth chord. Cyclic top/bottom share x.
+    Shallow-U cavity TFI (22/78 inner split) put collinear west/north edges on
+    the inner arc → ~89° non-ortho / pyramid / skew at the stem. Horizontal TFI
+    of the tip-wrap onto a rectangular inlet did the same at the LE tip. H-blocks
+    here are vertical rays (cavity+south, back→y_top) and horizontal rays (steep
+    stems→inlet/outlet). Cyclic top/bottom share x. 1:1 wall-normal O–H nodes.
     """
     notes: list[str] = []
     n_out_x = int(n_out_x or n_out)
@@ -1101,21 +1441,12 @@ def build_offset_oh(
         raise RuntimeError("offset-O U-split failed (not a down-opening cavity)")
     inner_idx = spl["inner"]
     outer_idx = spl["outer"]
-    kNW, kNE = spl["kNW"], spl["kNE"]
-    kE, kW = spl["kE"], spl["kW"]
-    kE_top, kW_top = spl["kE_top"], spl["kW_top"]
     notes.append(
         f"U-cavity depth {spl['depth']*1e3:.2f} mm / y-span {spl['yspan']*1e3:.2f} mm; "
-        f"cavity TFI + offset collar (not AABB morph across the stems)"
+        f"axis-aligned H (vertical cavity/back, horizontal stems) + offset collar"
     )
 
-    n_stem = max(int(n_in), int(n_cyc), 12)
-    n_cav_x = int(n_cyc)
-    n_cav_y = n_stem
-    n_up = max(int(n_fill), 4)
     le_r = max(float(le_cluster), 1.0)
-    # Local per-arc x-range: global blade x makes the whole west stem look "near LE"
-    # (flat weights). Local range densifies toward min-x *on that arc*.
     if le_r > 1.0 + 1e-12:
         notes.append(
             f"streamwise LE cluster le_cluster={le_r:.3g} on wall/offset arcs "
@@ -1125,41 +1456,98 @@ def build_offset_oh(
     def _side(ring, idx, nseg):
         return _resample_xy(idx, ring, nseg, le_r)
 
-    cav_w = _side(outer_hi, inner_idx[: kNW + 1], n_cav_y)
-    cav_n = _side(outer_hi, inner_idx[kNW : kNE + 1], n_cav_x)
-    cav_e_n2s = _side(outer_hi, inner_idx[kNE :], n_cav_y)
-    cav_e = cav_e_n2s[::-1].copy()
-    east_o = _side(outer_hi, outer_idx[: kE + 1], n_out)                 # Rt → stem NE
-    east_up = _side(outer_hi, outer_idx[kE : kE_top + 1], n_up)          # stem NE → top NE
-    north_o = _side(outer_hi, outer_idx[kE_top : kW_top + 1], n_cyc)     # top NE → top NW
-    west_up = _side(outer_hi, outer_idx[kW_top : kW + 1], n_up)          # top NW → stem NW
-    west_o = _side(outer_hi, outer_idx[kW :], n_in)                      # stem NW → Lt
+    # 45° |dx|=|dy| corners on the outer back — not 22/78 inner or 0.72 ymax.
+    # Inner is a shallow arc (tangents ≲30°): do NOT split it into west/north/east
+    # TFI (those corners are collinear → 89° non-ortho / pyramid / skew).
+    kSE, kE, kW, kSW = _outer_dxdy_corners(outer_idx, outer_hi, max_dx_dy=1.0)
+    n_inner = int(n_cyc)
+    n_fill_h = max(int(n_fill), 4)
+    n_tip = max(6, int(n_out) // 2)
 
-    met_w = _side(inner_hi, inner_idx[: kNW + 1], n_cav_y)
-    met_n = _side(inner_hi, inner_idx[kNW : kNE + 1], n_cav_x)
-    met_e = _side(inner_hi, inner_idx[kNE :], n_cav_y)[::-1].copy()
-    met_east_o = _side(inner_hi, outer_idx[: kE + 1], n_out)
-    met_east_up = _side(inner_hi, outer_idx[kE : kE_top + 1], n_up)
-    met_north_o = _side(inner_hi, outer_idx[kE_top : kW_top + 1], n_cyc)
-    met_west_up = _side(inner_hi, outer_idx[kW_top : kW + 1], n_up)
-    met_west_o = _side(inner_hi, outer_idx[kW :], n_in)
+    iLt = int(spl["iLt"])
+    iRt = int(spl["iRt"])
+    x_Lt = float(inner_hi[iLt, 0])
+    x_Rt = float(inner_hi[iRt, 0])
+    xs_blade = np.linspace(x_Lt, x_Rt, n_inner + 1)
+    x_kE = float(outer_hi[outer_idx[kE], 0])
+    x_kW = float(outer_hi[outer_idx[kW], 0])
+    i_nw_b = int(np.argmin(np.abs(xs_blade - x_kW)))
+    i_ne_b = int(np.argmin(np.abs(xs_blade - x_kE)))
+    if i_ne_b < i_nw_b:
+        i_nw_b, i_ne_b = i_ne_b, i_nw_b
+    i_nw_b = max(1, min(i_nw_b, n_inner - 2))
+    i_ne_b = max(i_nw_b + 4, min(i_ne_b, n_inner - 1))
+    # Same node count as south_o (tip wraps + inner) so N/S cyclic faces pair.
+    n_south_o = n_inner + 2 * n_tip
+    xs_north = np.linspace(min(x_kW, x_kE), max(x_kW, x_kE), n_south_o + 1)
+
+    met_cav = _interp_arc_xs(inner_hi[inner_idx], xs_blade)
+    met_north = _interp_arc_xs(inner_hi[outer_idx[kE : kW + 1]], xs_north)
+    # CCW ring: Lt → inner → Rt → east tip/stem → north (Rt-side → Lt-side) → west stem/tip
+    met_east_tip = _side(inner_hi, outer_idx[: kSE + 1], n_tip)
+    met_east_stem = _side(inner_hi, outer_idx[kSE : kE + 1], n_out)
+    met_west_stem = _side(inner_hi, outer_idx[kW : kSW + 1], n_in)
+    met_west_tip = _side(inner_hi, outer_idx[kSW :], n_tip)
+    # north metal is kW→kE in +x; CCW walk is kE→kW
+    met_north_ccw = met_north[::-1].copy()
 
     inner = np.concatenate(
         [
-            met_w[:-1], met_n[:-1], met_e[::-1][:-1],
-            met_east_o[:-1], met_east_up[:-1], met_north_o[:-1], met_west_up[:-1], met_west_o[:-1],
+            met_cav[:-1],
+            met_east_tip[:-1],
+            met_east_stem[:-1],
+            met_north_ccw[:-1],
+            met_west_stem[:-1],
+            met_west_tip[:-1],
         ],
         axis=0,
     )
-    outer = np.concatenate(
-        [
-            cav_w[:-1], cav_n[:-1], cav_e_n2s[:-1],
-            east_o[:-1], east_up[:-1], north_o[:-1], west_up[:-1], west_o[:-1],
-        ],
-        axis=0,
+    # 1:1 wall-normal outer (independent outer resample was the O non-ortho hole).
+    outer = offset_closed(inner, d_use, n_smooth=12)
+    if float(outer[:, 1].min()) <= y_bot + 1e-6 or float(outer[:, 1].max()) >= y_top - 1e-6:
+        for _try in range(8):
+            d_use *= 0.6
+            outer = offset_closed(inner, d_use, n_smooth=12)
+            if float(outer[:, 1].min()) > y_bot + 1e-6 and float(outer[:, 1].max()) < y_top - 1e-6:
+                break
+        else:
+            raise RuntimeError("wall-normal offset-O collides with cyclic pitch boundary")
+        notes.append(f"d_o shrunk for wall-normal outer → {d_use:.3g} m")
+    # Rebuild H-facing outer arcs from the same-index outer ring (conformal O–H).
+    n_cav_n = int(met_cav.shape[0] - 1)
+    n_east_tip = int(met_east_tip.shape[0] - 1)
+    n_east_stem = int(met_east_stem.shape[0] - 1)
+    n_north_n = int(met_north_ccw.shape[0] - 1)
+    n_west_stem = int(met_west_stem.shape[0] - 1)
+    n_west_tip = int(met_west_tip.shape[0] - 1)
+    lens = [n_cav_n, n_east_tip, n_east_stem, n_north_n, n_west_stem, n_west_tip]
+    if int(sum(lens)) != int(inner.shape[0]):
+        raise RuntimeError(f"O ring lens {sum(lens)} != inner {inner.shape[0]}")
+    offs = [0]
+    for L in lens:
+        offs.append(offs[-1] + L)
+
+    def _arc(i0: int, i1: int) -> np.ndarray:
+        pts = [outer[k % outer.shape[0]] for k in range(i0, i1)]
+        pts.append(outer[i1 % outer.shape[0]])
+        return np.asarray(pts, dtype=float)
+
+    cav_o = _arc(offs[0], offs[1])                 # Lt → Rt inner offset
+    east_tip_o = _arc(offs[1], offs[2])            # Rt → SE 45°
+    east_stem_o = _arc(offs[2], offs[3])           # SE 45° → kE
+    north_o_ccw = _arc(offs[3], offs[4])           # kE → kW
+    west_stem_o = _arc(offs[4], offs[5])           # kW → SW 45°
+    west_tip_o = _arc(offs[5], offs[6] if offs[6] < outer.shape[0] else outer.shape[0])
+    if west_tip_o.shape[0] != n_west_tip + 1:
+        west_tip_o = np.concatenate([outer[offs[5]:], outer[0:1]], axis=0)
+    if west_tip_o.shape[0] != n_west_tip + 1:
+        raise RuntimeError(f"west_tip_o len {west_tip_o.shape[0]} != {n_west_tip+1}")
+    north_o = north_o_ccw[::-1].copy()             # kW → kE (+x), for vertical rays
+    notes.append("O outer = offset_closed(inner) — wall-normal 1:1 O–H node match")
+    notes.append(
+        f"OH corners 45°: kSE={kSE} kE={kE} kW={kW} kSW={kSW} "
+        f"n_inner={n_cav_n} n_north={n_north_n} n_west={n_west_stem} n_east={n_east_stem}"
     )
-    if inner.shape[0] != outer.shape[0]:
-        raise RuntimeError(f"U offset-O ring mismatch inner={inner.shape[0]} outer={outer.shape[0]}")
 
     ogrid = build_pitch_ogrid(inner, outer, n_rad, stretch)
     if min_cell_area_2d(ogrid) <= 0:
@@ -1171,6 +1559,8 @@ def build_offset_oh(
     if min_cell_area_2d(sm) > 0:
         ogrid = sm
         a2 = min_cell_area_2d(ogrid)
+    # (O vertical outer snap disabled — thin collar folds)
+
     # H-O-H: open O at TE. Periodic wrap across dual-arc TE makes same-side faces.
     # Rotate TE (wall max-x) to column 0; keep that column for wake south/north
     # nodes (H still expects the TE outer point); open cuts are the adjacent
@@ -1197,152 +1587,158 @@ def build_offset_oh(
         f"(unkink {kink_um:.0f} um), cut wall sep={dcut*1e3:.4f} mm"
     )
 
-    pLt = cav_w[0]
-    pRt = cav_e[0]
-    pNW_o = west_o[0]          # stem NW
-    pNE_o = east_o[-1]         # stem NE
-    pNW_top = north_o[-1]
-    pNE_top = north_o[0]
-    west_s2n = west_o[::-1].copy()
-    east_s2n = east_o
-    west_up_s2n = west_up[::-1].copy()  # stem NW → top NW
-    east_up_s2n = east_up               # stem NE → top NE
-    north_ltr = north_o[::-1].copy()    # top NW → top NE
-    mouth = _lin(pLt, pRt, n_cyc)
-    cav_south = mouth
-    cav_north = cav_n
-    cav_west = cav_w
-    cav_east = cav_e
-    if cav_north.shape[0] != cav_south.shape[0] or cav_west.shape[0] != cav_east.shape[0]:
-        raise RuntimeError("cavity TFI edge mismatch")
-    h_cav_raw = tfi_block(cav_south, cav_north, cav_west, cav_east)
-    if min_cell_area_2d_rect(h_cav_raw) <= 0:
-        h_cav_raw = tfi_block(cav_south, cav_north, cav_east, cav_west)
-        notes.append("cavity TFI: swapped east/west to clear inverted quads")
-    h_cav = _pos_block(h_cav_raw, "cavity")
+    # ---- H-blocks: axis-aligned rays, 1:1 O-edge nodes ----
+    # south_o: left tip wrap (SW45→Lt, +x) + inner offset + right tip wrap (Rt→SE45).
+    south_o = np.concatenate([west_tip_o[:-1], cav_o, east_tip_o[1:]], axis=0)
+    # west/east stems only (already 45°-trimmed by kSE/kSW)
+    west_s2n = west_stem_o[::-1].copy()   # SW 45° → kW (increasing y)
+    east_s2n = east_stem_o               # SE 45° → kE (increasing y)
+    pSW = west_s2n[0]
+    pNW = west_s2n[-1]
+    pSE = east_s2n[0]
+    pNE = east_s2n[-1]
+    pLt = cav_o[0]
+    pRt = cav_o[-1]
 
-    x_join_w = float(pLt[0])
-    x_join_e = float(pRt[0])
-    # Inlet H axial: pack toward LE join (high-x), mirror dump stretch toward blade.
     r_in = _inlet_pack_r(n_in, r_inlet)
+    # Shared cyclic x like the original writer: join at the cavity tips so
+    # sw/nw use xs_w and south/north use the inner-offset x's (same count).
+    x_join_w = float(pSW[0])
+    x_join_e = float(pSE[0])
     xs_w = _xs_pack_hi(x_in, x_join_w, n_in, r_in)
-    xs_s = np.linspace(x_join_w, x_join_e, n_cyc + 1)
     notes.append(
         f"inlet H axial pack toward LE (inlet_stretch={r_inlet:.3g}→{r_in:.3g}, n_inlet={n_in}); "
         "Δx smaller near LE join than at x_in"
     )
-    x_cart = min(x_out - 1e-6, max(float(outer_hi[:, 0].max()), x_join_e) + 2e-4)
-    xs_near = np.linspace(x_join_e, x_cart, n_out + 1)
-    xs_dump = np.linspace(x_cart, x_out, n_out_x + 1)
-    xs_e = xs_near
-    cyc_s = np.column_stack([xs_s, np.full(xs_s.shape[0], y_bot)])
-    cyc_n = np.column_stack([xs_s, np.full(xs_s.shape[0], y_top)])
-    join_w_top = np.array([x_join_w, y_top], dtype=float)
-    join_e_top = np.array([x_join_e, y_top], dtype=float)
-    join_w_bot = np.array([x_join_w, y_bot], dtype=float)
-    join_e_bot = np.array([x_join_e, y_bot], dtype=float)
+    x_cart = min(x_out - 1e-6, max(float(outer_hi[:, 0].max()), float(pSE[0]), x_join_e) + 2e-4)
+    xs_e = np.linspace(x_join_e, x_cart, n_out + 1)
+    if dump_xs is not None:
+        xs_dump = np.asarray(dump_xs, dtype=float).copy()
+        xs_dump = xs_dump - float(xs_dump[0]) + float(x_cart)
+        notes.append(
+            f"dump xs override n={len(xs_dump)-1} L={(xs_dump[-1]-xs_dump[0])*1e3:.2f} mm "
+            f"last_Δx={(xs_dump[-1]-xs_dump[-2])*1e3:.3f} mm"
+        )
+        x_out = float(xs_dump[-1])
+    elif dump_rx is not None and float(dump_rx) > 1.0 + 1e-12 and n_out_x >= 2:
+        L = max(float(x_out) - float(x_cart), 1e-6)
+        r = float(dump_rx)
+        xs_dump = np.array(
+            [x_cart + L * _stretch(j, n_out_x, r) for j in range(n_out_x + 1)], dtype=float
+        )
+        notes.append(
+            f"dump geometric rx={r:.3g} n={n_out_x} last_Δx={(xs_dump[-1]-xs_dump[-2])*1e3:.3f} mm"
+        )
+    else:
+        xs_dump = np.linspace(x_cart, x_out, n_out_x + 1)
 
-    # Shared wake interface: cavity uses mouth Lt→Rt as south; south H uses the
-    # same point sequence as its north edge (conformal). Face-normal repair later
-    # orients owner→neighbour; do not reverse here or nodes will duplicate.
-    h_south = _pos_block(
-        tfi_block(cyc_s, mouth, _lin(join_w_bot, pLt, n_fill), _lin(join_e_bot, pRt, n_fill)),
-        "south",
-    )
-    h_north = _pos_block(
-        tfi_block(north_ltr, cyc_n, _lin(pNW_top, join_w_top, n_fill), _lin(pNE_top, join_e_top, n_fill)),
-        "north",
-    )
+    y_sw = float(pSW[1])
+    y_se = float(pSE[1])
+    y_nw = float(pNW[1])
+    y_ne = float(pNE[1])
+    # Mid cyclic x = north O x's so N/S cyclics pair 1:1 with no fan.
     h_west = _pos_block(
-        tfi_block(
-            _lin_pack_end((x_in, pLt[1]), pLt, n_in, r_in),
-            _lin_pack_end((x_in, pNW_o[1]), pNW_o, n_in, r_in),
-            np.column_stack([np.full(west_s2n.shape[0], x_in), west_s2n[:, 1]]),
-            west_s2n,
+        _ray_block_horizontal(
+            x_in, west_s2n[:, 0], west_s2n[:, 1], n_in, pack_r=r_in, dense_at="hi"
         ),
         "west",
-    )
-    h_west_up = _pos_block(
-        tfi_block(
-            _lin_pack_end((x_in, pNW_o[1]), pNW_o, n_in, r_in),
-            _lin_pack_end((x_in, pNW_top[1]), pNW_top, n_in, r_in),
-            np.column_stack([np.full(west_up_s2n.shape[0], x_in), west_up_s2n[:, 1]]),
-            west_up_s2n,
-        ),
-        "west_up",
+        keep_edges=True,
     )
     h_east = _pos_block(
-        tfi_block(
-            _lin(pRt, (x_cart, pRt[1]), n_out),
-            _lin(pNE_o, (x_cart, pNE_o[1]), n_out),
-            east_s2n,
-            np.column_stack([np.full(east_s2n.shape[0], x_cart), east_s2n[:, 1]]),
+        _ray_block_horizontal(
+            east_s2n[:, 0], x_cart, east_s2n[:, 1], n_out, pack_r=1.0, dense_at="lo"
         ),
         "east",
+        keep_edges=True,
     )
-    h_east_up = _pos_block(
-        tfi_block(
-            _lin(pNE_o, (x_cart, pNE_o[1]), n_out),
-            _lin(pNE_top, (x_cart, pNE_top[1]), n_out),
-            east_up_s2n,
-            np.column_stack([np.full(east_up_s2n.shape[0], x_cart), east_up_s2n[:, 1]]),
+    h_south = _pos_block(
+        _ray_block_vertical(
+            y_bot, south_o[:, 1], south_o[:, 0], n_fill_h, pack_r=1.0, dense_at="hi"
         ),
-        "east_up",
+        "south",
+        keep_edges=True,
     )
+    xs_s = south_o[:, 0]
+    north_top = np.column_stack([xs_s, np.full(xs_s.shape[0], y_top)])
+    if north_o.shape[0] != xs_s.shape[0]:
+        north_o = _interp_arc_xs(
+            north_o,
+            np.linspace(float(north_o[0, 0]), float(north_o[-1, 0]), int(xs_s.shape[0])),
+        )
+    h_n_raw = np.zeros((xs_s.shape[0], n_fill_h + 1, 2), dtype=float)
+    for _i in range(xs_s.shape[0]):
+        h_n_raw[_i] = _lin_pack_start(north_o[_i], north_top[_i], n_fill_h, 1.0)
+    sm = smooth_rect_block(h_n_raw, n_iter=80, omega=0.45)
+    if min_cell_area_2d_rect(sm) > 0:
+        h_n_raw = sm
+    h_north = _pos_block(h_n_raw, "north", keep_edges=True)
+
+    west_s = h_west[:, 0, :]
+    west_n = h_west[:, -1, :]
+    east_s = h_east[:, 0, :]
+    east_n = h_east[:, -1, :]
+    south_w = h_south[0, :, :]
+    south_e = h_south[-1, :, :]
+    north_w = h_north[0, :, :]
+    north_e = h_north[-1, :, :]
+
     h_sw = _pos_block(
         tfi_block(
-            np.column_stack([xs_w, np.full(xs_w.shape[0], y_bot)]),
-            _lin_pack_end((x_in, pLt[1]), pLt, n_in, r_in),
-            _lin((x_in, y_bot), (x_in, pLt[1]), n_fill),
-            _lin(join_w_bot, pLt, n_fill),
+            np.column_stack([west_s[:, 0], np.full(west_s.shape[0], y_bot)]),
+            west_s,
+            np.column_stack([np.full(south_w.shape[0], x_in), south_w[:, 1]]),
+            south_w,
         ),
         "sw",
+        keep_edges=True,
     )
     h_se = _pos_block(
         tfi_block(
-            np.column_stack([xs_e, np.full(xs_e.shape[0], y_bot)]),
-            np.column_stack([xs_e, np.full(xs_e.shape[0], pRt[1])]),
-            _lin(join_e_bot, pRt, n_fill),
-            _lin((x_cart, y_bot), (x_cart, pRt[1]), n_fill),
+            np.column_stack([east_s[:, 0], np.full(east_s.shape[0], y_bot)]),
+            east_s,
+            south_e,
+            np.column_stack([np.full(south_e.shape[0], x_cart), south_e[:, 1]]),
         ),
         "se",
+        keep_edges=True,
     )
-    h_nw = _pos_block(
-        tfi_block(
-            _lin_pack_end((x_in, pNW_top[1]), pNW_top, n_in, r_in),
-            np.column_stack([xs_w, np.full(xs_w.shape[0], y_top)]),
-            _lin((x_in, pNW_top[1]), (x_in, y_top), n_fill),
-            _lin(pNW_top, join_w_top, n_fill),
-        ),
-        "nw",
-    )
-    h_ne = _pos_block(
-        tfi_block(
-            _lin(pNE_top, (x_cart, pNE_top[1]), n_out),
-            np.column_stack([xs_e, np.full(xs_e.shape[0], y_top)]),
-            _lin(pNE_top, join_e_top, n_fill),
-            _lin((x_cart, pNE_top[1]), (x_cart, y_top), n_fill),
-        ),
-        "ne",
-    )
-    ys_dump = np.concatenate(
-        [
-            np.linspace(y_bot, float(pRt[1]), n_fill + 1)[:-1],
-            east_s2n[:-1, 1],
-            east_up_s2n[:-1, 1],
-            np.linspace(float(pNE_top[1]), y_top, n_fill + 1),
-        ]
-    )
+    nw_north = np.column_stack([west_s[:, 0], np.full(west_s.shape[0], y_top)])
+    nw_east = _lin(west_n[-1], nw_north[-1], north_w.shape[0] - 1)
+    nw_west = _lin(west_n[0], nw_north[0], north_w.shape[0] - 1)
+    h_nw_raw = tfi_block(west_n, nw_north, nw_west, nw_east)
+    sm = smooth_rect_block(h_nw_raw, n_iter=80, omega=0.45)
+    if min_cell_area_2d_rect(sm) > 0:
+        h_nw_raw = sm
+    h_nw = _pos_block(h_nw_raw, "nw", keep_edges=True)
+    ne_north = np.column_stack([east_s[:, 0], np.full(east_s.shape[0], y_top)])
+    ne_west = _lin(east_n[0], ne_north[0], north_e.shape[0] - 1)
+    ne_east = _lin(east_n[-1], ne_north[-1], north_e.shape[0] - 1)
+    h_ne_raw = tfi_block(east_n, ne_north, ne_west, ne_east)
+    sm = smooth_rect_block(h_ne_raw, n_iter=80, omega=0.45)
+    if min_cell_area_2d_rect(sm) > 0:
+        h_ne_raw = sm
+    h_ne = _pos_block(h_ne_raw, "ne", keep_edges=True)
+
+    ys_dump = _join_xs(h_se[-1, :, 1], h_east[-1, :, 1], h_ne[-1, :, 1])
     h_dump = _pos_block(cartesian_block_xy(xs_dump, ys_dump), "dump")
     snap = [(te_w_old, te_w), (te_o_old, te_o)]
-    h_rest = [_snap_points(hb, snap) for hb in [h_cav, h_west, h_west_up, h_east, h_east_up, h_south, h_north, h_sw, h_se, h_nw, h_ne, h_dump]]
+    h_rest = [
+        _snap_points(hb, snap)
+        for hb in [
+            h_west, h_east, h_south, h_north,
+            h_sw, h_se, h_nw, h_ne, h_dump,
+        ]
+    ]
     h_blocks = [h_te_wake, *h_rest]
-    notes.append("H-blocks: cavity TFI inside the U; outer TFI to the pitch rectangle.")
+    notes.append(
+        "H-blocks: vertical rays cavity+south and back→y_top; horizontal rays on steep stems. "
+        "No cavity TFI (inner 22/78 was the 89° collinear-corner hole). "
+        "No west_up/east_up horizontal TFI of the shoulders."
+    )
     notes.append("H TE nodes snapped to wake chord (unkinked).")
     notes.append("Cyclic x-nodes are shared top/bottom so 3-pitch stacking is conformal.")
     notes.append("NOT subsetMesh stairs. NOT AABB morph across the cavity. NOT Gmsh.")
     return ogrid, h_blocks, a2, notes
-
 
 
 
@@ -2093,6 +2489,142 @@ def build_hybrid_oh_tri(
 
 
 
+def build_body_fitted_oh_shock(
+    poly0,
+    *,
+    x_in,
+    x_out,
+    y_bot,
+    y_top,
+    n_in,
+    n_out,
+    n_cyc,
+    n_rad,
+    n_fill,
+    stretch,
+    d_o,
+    n_out_x=None,
+    le_cluster=2.5,
+    inlet_stretch=None,
+    beta1_deg=65.0,
+    beta2_deg=-65.0,
+    chord_m=0.014,
+    dump_rx=1.18,
+    dump_dx_last=1.4e-3,
+    wake_cx=1.0,
+    x_dense_c=0.25,
+    te_angular_min=10,
+    n_pitchwise_throat=40,
+    y1_m=None,
+):
+    """Goldman shock O–H wrapper around conformal build_offset_oh."""
+    from .oh_shock import count_te_angular_cells, dump_xs_rx
+    import math
+
+    notes = []
+    metrics = {}
+    c = max(float(chord_m), 1e-6)
+    n_pw = max(int(n_pitchwise_throat), int(n_fill), 8)
+    n_fill_use = n_pw
+    n_in_use = max(int(n_in), 8)
+    n_out_use = max(int(n_out), int(te_angular_min) + 8, 18)
+    n_cyc_use = max(int(n_cyc), n_pw, 24)
+    r_wall = max(float(stretch), 1.0)
+    r_inlet = max(float(inlet_stretch if inlet_stretch is not None else 1.12), 1.0)
+    rx = max(float(dump_rx), 1.0 + 1e-9)
+    dx_last = max(float(dump_dx_last), 1e-6)
+    x_te = max(p[0] for p in poly0)
+    x_cart_est = x_te + 2e-4
+    dx0 = max(20e-6, 0.0015 * c)
+    n_wake = max(16, int(float(wake_cx) * c / max(dx0, 1e-6) / 2))
+    r_w = min(max(r_wall, 1.05), 1.12)
+    xs_w = np.array(
+        [x_cart_est + float(wake_cx) * c * _stretch(j, n_wake, r_w) for j in range(n_wake + 1)],
+        dtype=float,
+    )
+    dx0_w = min(float(xs_w[-1] - xs_w[-2]), dx_last)
+    xs_tail, L_tail, n_tail = dump_xs_rx(
+        float(xs_w[-1]), rx=rx, dx_last=dx_last, dx0=max(dx0_w * 0.9, dx0), n_min=6, n_max=40
+    )
+    xs_full = np.concatenate([xs_w[:-1], xs_tail])
+    if abs(float(xs_full[-1] - xs_full[-2]) - dx_last) / dx_last > 0.35:
+        xs_full, _, _ = dump_xs_rx(x_cart_est, rx=rx, dx_last=dx_last, dx0=dx0, n_min=20, n_max=60)
+        while float(xs_full[-1] - xs_full[0]) < float(wake_cx) * c + 0.008:
+            xs_full = np.append(xs_full, float(xs_full[-1]) + dx_last)
+    n_dump = int(len(xs_full) - 1)
+    ogrid, h_blocks, a2, oh_notes = build_offset_oh(
+        poly0,
+        x_in=x_in,
+        x_out=float(xs_full[-1]),
+        y_bot=y_bot,
+        y_top=y_top,
+        n_in=n_in_use,
+        n_out=n_out_use,
+        n_cyc=n_cyc_use,
+        n_rad=int(n_rad),
+        n_fill=n_fill_use,
+        stretch=r_wall,
+        d_o=float(d_o),
+        n_out_x=int(n_dump),
+        le_cluster=max(float(le_cluster), 1.0),
+        inlet_stretch=r_inlet,
+        dump_xs=xs_full,
+        dump_rx=rx,
+        beta1_deg=float(beta1_deg),
+        beta2_deg=float(beta2_deg),
+    )
+    notes.extend(oh_notes)
+    dump = h_blocks[-1]
+    xs_d = dump[:, 0, 0]
+    last_dx = float(abs(xs_d[-1] - xs_d[-2]))
+    metrics.update(
+        {
+            "dump_last_dx_m": last_dx,
+            "dump_L_m": float(abs(xs_d[-1] - xs_d[0])),
+            "x_out_m": float(xs_d[-1]),
+            "n_pitchwise_throat": int(n_fill_use),
+            "n_radial": int(n_rad),
+            "stretch": float(r_wall),
+            "d_o_m": float(d_o),
+        }
+    )
+    te_ang = count_te_angular_cells(
+        ogrid[:, 0, :], te_a=ogrid[0, 0], te_b=ogrid[-1, 0], max_deg=20.0
+    )
+    metrics["te_angular_cells_in_20deg"] = int(te_ang)
+    if te_ang < int(te_angular_min):
+        raise RuntimeError(f"TE angular cells in 20° = {te_ang} < {te_angular_min}")
+    wall = ogrid[:, 0, :]
+    i_le = int(np.argmin(wall[:, 0]))
+    ds = np.linalg.norm(np.diff(wall, axis=0), axis=1)
+    le_ds = [float(ds[k]) for k in range(max(0, i_le - 3), min(len(ds), i_le + 3))]
+    metrics["le_ds_min_m"] = float(min(le_ds)) if le_ds else None
+    metrics["le_ds_target_m"] = 0.001 * c
+    first_cell = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
+    metrics["first_cell_m"] = first_cell
+    if y1_m is not None:
+        metrics["y1_m"] = float(y1_m)
+    notes.append(
+        "mesh_kind body_fitted_OH Goldman shock: conformal O + H; all quads; NOT hybrid_OH_tri."
+    )
+    return {
+        "ogrid": ogrid,
+        "h_blocks": h_blocks,
+        "a2": float(a2),
+        "notes": notes,
+        "first_cell": first_cell,
+        "n_i": int(ogrid.shape[0]),
+        "d_o": float(d_o),
+        "metrics": metrics,
+        "x_out": float(xs_d[-1]),
+        "n_in_use": n_in_use,
+        "n_fill": n_fill_use,
+        "n_out": int(n_out_use),
+        "n_cyc": int(n_cyc_use),
+    }
+
+
+
 @dataclass
 class MeshBuild:
     n_cells: int
@@ -2136,6 +2668,42 @@ def write_polymesh(
     cfd = job["cfd"]
     pitch = cascade_pitch_m(job)
     n_blades = int(g["n_blades_cascade"])
+    if str(cfd.get("mesh") or "").strip().lower() in ("hoh", "HOH", "mesh_hoh"):
+        from .hoh_mesher import build_hoh_mesh
+        from .meanline import compute_meanline
+        dest = Path(case_dir)
+        res = build_hoh_mesh(job, compute_meanline(job), n_blades=3, tier="balanced", out_dir=dest)
+        if not getattr(res, "solvable", False):
+            raise RuntimeError(
+                f"HOH not solvable n_cells={res.n_cells} maxNO={res.max_nonortho_deg} "
+                f"p50={ {k: (res.gates.get('where') or {}).get(k) for k in ('inlet','dump','LE','TE','passage')} }"
+            )
+        pitch_v = float(pitch)
+        polys = []
+        try:
+            from .geometry import profile_from_job as _pfj
+            base = list(_pfj(job, spec))
+            for k in range(3):
+                polys.append([(x, y + k * pitch_v) for x, y in base])
+        except Exception:
+            polys = []
+        notes = list(res.notes)
+        notes.append(f"HOH solvable={res.solvable} success={res.success} maxNO={res.max_nonortho_deg:.2f} skew={res.max_skew:.2f}")
+        return MeshBuild(
+            n_cells=res.n_cells,
+            n_points=0,
+            n_faces=0,
+            patches={"inlet": [0], "outlet": [0], "bottom": [0], "top": [0], "blades": [0], "frontAndBack": [0]},
+            first_cell_m=0.0,
+            min_area_2d=0.0,
+            check_notes=notes,
+            pitch_m=pitch_v,
+            mesh_kind="hoh",
+            n_quad=res.n_cells,
+            blade_polys=polys,
+            y_min=min((p[1] for poly in polys for p in poly), default=0.0),
+            y_max=max((p[1] for poly in polys for p in poly), default=0.0) + 0.0,
+        )
     x_in = -float(cfd["x_up_c"]) * spec.chord_m
     x_out = spec.chord_m + float(cfd["x_dn_c"]) * spec.chord_m
     n_in = int(cfd["n_inlet"])
@@ -2154,6 +2722,7 @@ def write_polymesh(
     n_le = int(cfd.get("n_le") or 0)
     mesh_req = str(cfd.get("mesh") or "body_fitted_OH").strip()
     use_hybrid = mesh_req in ("hybrid_OH_tri", "hybrid_oh_tri", "hybrid")
+    use_body = (not use_hybrid) and mesh_req in ("body_fitted_OH", "body_fitted", "oh_shock", "")
     h_le_knob = cfd.get("h_le")
     h_pass_knob = cfd.get("h_pass")
     h_far_knob = cfd.get("h_far")
@@ -2200,8 +2769,8 @@ def write_polymesh(
             "Refuse mesh/solve."
         )
     d_o_gate = min(0.00045, 0.06 * spec.chord_m)
-    # Hybrid refuses cassette stacking (one-pitch strip only).
-    if (not use_hybrid) and yspan + 2.0 * d_o_gate >= float(pitch):
+    # Goldman body_fitted_OH: always strip+cyclics — never cassette_OH.
+    if (not use_hybrid) and (not use_body) and yspan + 2.0 * d_o_gate >= float(pitch):
         cas = build_cassette_oh(
             poly0,
             pitch=pitch,
@@ -2287,7 +2856,83 @@ def write_polymesh(
                 f"d_o capped {d_o_req:.3g} → {d_o:.3g} m by 0.28*g_min "
                 f"(g_min={float(gap0['g_min'])*1e3:.3f} mm); O not thickened for shocks"
             )
-    if passage is None and cas is None and use_cavity and use_hybrid:
+    shock_metrics: dict = {}
+    if passage is None and cas is None and use_cavity and use_body:
+        from .oh_shock import d_o_from_y1, y1_wall_m
+        gas = job.get("gas") or {}
+        y1, u_tau, y1_note = y1_wall_m(
+            mu_pa_s=float(gas.get("mu_pa_s") or 1e-5),
+            rho1_kg_m3=float(gas.get("rho1_kg_m3") or gas.get("rho1") or 1.0),
+            w1_m_s=float(gas.get("w1_m_s") or 1.0),
+            yplus_target=float(cfd.get("yplus_target") or 1.0),
+        )
+        shock_metrics["y1_m"] = y1
+        shock_metrics["u_tau"] = u_tau
+        shock_metrics["y1_note"] = y1_note
+        r_use = max(float(stretch), 1.12)
+        n_rad = max(int(n_rad), 20)
+        cfd["n_radial"] = n_rad
+        d_o_req = d_o_from_y1(y1, n_rad, r_use)
+        d_cap = min(
+            0.28 * max(float(gap0["g_min"]), 1e-6),
+            0.45 * max(clearance_y, 2e-6),
+            0.06 * spec.chord_m,
+            0.00045,
+        )
+        d_o = min(d_o_req, d_cap)
+        stretch = r_use
+        shock_metrics["n_radial"] = n_rad
+        beta1 = float(g.get("beta1_flow_deg") or 65.0)
+        beta2 = float(g.get("beta2_flow_deg") or -65.0)
+        n_pw = int(cfd.get("n_pitchwise_throat") or max(n_fill, 40))
+        n_fill = max(n_fill, n_pw)
+        hy = build_body_fitted_oh_shock(
+            poly0,
+            x_in=x_in,
+            x_out=x_out,
+            y_bot=y_bot,
+            y_top=y_top,
+            n_in=n_in,
+            n_out=n_out,
+            n_cyc=n_cyc,
+            n_rad=n_rad,
+            n_fill=n_fill,
+            stretch=stretch,
+            d_o=d_o,
+            n_out_x=n_out_x,
+            le_cluster=le_cluster,
+            inlet_stretch=inlet_stretch,
+            beta1_deg=beta1,
+            beta2_deg=beta2,
+            chord_m=spec.chord_m,
+            dump_rx=float(cfd.get("dump_rx") or 1.18),
+            dump_dx_last=float(cfd.get("dump_dx_last_m") or 1.4e-3),
+            wake_cx=float(cfd.get("wake_cx") or 1.0),
+            x_dense_c=float(cfd.get("x_dense_c") or 0.25),
+            te_angular_min=int(cfd.get("te_angular_min") or 10),
+            n_pitchwise_throat=n_pw,
+            y1_m=y1,
+        )
+        ogrid = hy["ogrid"]
+        h_blocks = hy["h_blocks"]
+        a2 = hy["a2"]
+        oh_notes = list(hy["notes"])
+        first_cell = hy["first_cell"]
+        n_i = hy["n_i"]
+        d_o = hy["d_o"]
+        x_out = float(hy.get("x_out") or x_out)
+        shock_metrics.update(hy.get("metrics") or {})
+        shock_metrics["yplus_target"] = float(cfd.get("yplus_target") or 1.0)
+        n_quad_cells = int(n_i * n_rad)
+        for hb in h_blocks:
+            n_quad_cells += int((hb.shape[0] - 1) * (hb.shape[1] - 1))
+        n_quad_cells *= int(n_blades)
+        job["_oh_shock"] = dict(shock_metrics)
+        oh_notes.append(
+            f"body_fitted_OH child n_blades_cascade={n_blades}; "
+            f"stack_after_child_ok={bool(cfd.get('stack_after_child_ok'))}"
+        )
+    elif passage is None and cas is None and use_cavity and use_hybrid:
         hy = build_hybrid_oh_tri(
             poly0,
             x_in=x_in,

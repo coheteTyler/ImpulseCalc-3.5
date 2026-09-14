@@ -80,8 +80,8 @@ def resolve_outline_png() -> Path | None:
 def resolve_mesh_png() -> Path | None:
     """Last body-fitted mesh wire preview (not the cascade outline)."""
     for cand in (
+        PREVIEW_OUT / "mesh_preview.png",  # knobs_preview root — Mesh tab source of truth
         LAST_MESH_PNG,
-        PREVIEW_OUT / "mesh_preview.png",
         PREVIEW_CASE / "mesh_preview.png",
         ROOT / APP_OUTPUT / "plots" / "mesh_preview.png",
         ROOT / APP_OUTPUT / "viewer_plots" / "mesh_preview.png",
@@ -743,7 +743,31 @@ def _run_mesh(knobs: dict[str, Any]) -> dict[str, Any]:
     from .run import run_job
 
     job = knobs_to_job(knobs)
-    info = write_preview(job)
+    g = job.setdefault("geometry", {})
+    cfd = job.setdefault("cfd", {})
+    mk_req = str(cfd.get("mesh") or "").strip().lower()
+    if mk_req in ("hybrid", "hybrid_oh_tri"):
+        cfd["mesh"] = "hybrid_OH_tri"
+    elif mk_req in ("body_fitted_oh", "body_fitted", "oh_shock"):
+        cfd["mesh"] = "body_fitted_OH"
+    else:
+        cfd["mesh"] = "hoh"
+        g["n_blades_cascade"] = 3
+    try:
+        info = write_preview(job)
+    except Exception as exc:
+        if str(cfd.get("mesh")) != "hoh":
+            raise
+        # One fallback: keep previous hybrid so the site does not go blank.
+        cfd["mesh"] = "hybrid_OH_tri"
+        g["n_blades_cascade"] = 3
+        info = write_preview(job)
+        info.setdefault("notes", []).append(f"HOH throw; hybrid fallback: {exc}")
+    mk = str(info.get("mesh_kind") or "")
+    notes_join = " ".join(str(n) for n in (info.get("notes") or []))
+    if mk in ("hybrid_OH_tri", "hybrid_oh_tri", "hybrid") and mk_req not in ("hybrid", "hybrid_oh_tri"):
+        # Fallback only. Do not treat hybrid as the requested solve mesh.
+        pass
     job_path = Path(info["job_json"])
     of = openfoam_available()
     if not of:

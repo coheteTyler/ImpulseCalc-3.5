@@ -1,0 +1,53 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       polyBoundaryMesh;
+    object      boundary;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+6
+(
+    inlet
+    {
+        type            patch;
+        nFaces          180;
+        startFace       58394;
+    }
+    outlet
+    {
+        type            patch;
+        nFaces          180;
+        startFace       58574;
+    }
+    bottom
+    {
+        type            cyclic;
+        neighbourPatch  top;
+        transform       translational;
+        separationVector (0 0.0263880092886 0);
+        nFaces          124;
+        startFace       58754;
+    }
+    top
+    {
+        type            cyclic;
+        neighbourPatch  bottom;
+        transform       translational;
+        separationVector (0 -0.0263880092886 0);
+        nFaces          124;
+        startFace       58878;
+    }
+    blades
+    {
+        type            wall;
+        nFaces          492;
+        startFace       59002;
+    }
+    frontAndBack
+    {
+        type            empty;
+        nFaces          58944;
+        startFace       59494;
+    }
+)

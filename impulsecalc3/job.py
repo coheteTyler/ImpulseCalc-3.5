@@ -294,8 +294,9 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     gas["rho_held"] = held
     if (not held) or gas.get("rho1_kg_m3") in (None, ""):
         gas["rho1_kg_m3"] = perfect_gas_rho_kg_m3(p1_gas, r_gas, t1_gas)
-    if int(g["n_blades_cascade"]) != 3:
-        raise ValueError("this build requires n_blades_cascade = 3")
+    nbc = int(g["n_blades_cascade"])
+    if nbc not in (1, 3):
+        raise ValueError("n_blades_cascade must be 1 (OH child) or 3 (stack); got %s" % nbc)
     # Pc must not be used as cascade inlet
     pc = job["engine"].get("Pc_pa") or (float(job["engine"].get("Pc_bar", 0)) * 1e5)
     p1 = float(gas["p1_pa"])
@@ -328,21 +329,21 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     cfd.setdefault("turbulence", "laminar")
     cfd.setdefault("n_chords_min", 10.0)
     cfd.setdefault("inlet_bc", "static_rel")  # set total_rel or gas.pt_rel_pa for locked Pt,rel inlet
-    cfd.setdefault("mesh", "body_fitted_OH")
+    cfd.setdefault("mesh", "hoh")
     cfd.setdefault("z_thick_m", 0.001)
     cfd.setdefault("n_around", 56)
-    cfd.setdefault("n_radial", 12)
-    cfd.setdefault("n_inlet", 22)
+    cfd.setdefault("n_radial", 20)
+    cfd.setdefault("n_inlet", 10)
     cfd.setdefault("n_outlet", 28)
     cfd.setdefault("n_cyclic", 16)
-    cfd.setdefault("x_up_c", 1.5)
-    cfd.setdefault("x_dn_c", 6.0)
+    cfd.setdefault("x_up_c", 0.95)
+    cfd.setdefault("x_dn_c", 2.5)
     cfd.setdefault("outlet_p", "waveTransmissive")
     cfd.setdefault("max_co", 0.2)
-    cfd.setdefault("stretch", 1.35)
+    cfd.setdefault("stretch", 1.12)
     # Inlet H axial geometric pack toward LE (soft-capped in mesh; dump still uses stretch).
     cfd.setdefault("inlet_stretch", 1.12)
-    cfd.setdefault("n_pitch_fill", 7)
+    cfd.setdefault("n_pitch_fill", 40)
     # Streamwise LE clustering on body_fitted wall ring (1=uniform). Optional n_le raises west share.
     cfd.setdefault("le_cluster", 2.5)
     cfd.setdefault("n_le", 14)
@@ -353,6 +354,14 @@ def validate_job(job: dict[str, Any], source: str = "") -> dict[str, Any]:
     cfd.setdefault("growth", 1.25)
     # Axial dense-start station upstream of LE (fraction of chord); hybrid size ramp.
     cfd.setdefault("x_dense_c", 0.25)
+    cfd.setdefault("n_pitchwise_throat", 40)
+    cfd.setdefault("dump_rx", 1.18)
+    cfd.setdefault("dump_dx_last_m", 1.4e-3)
+    cfd.setdefault("wake_cx", 1.0)
+    cfd.setdefault("yplus_target", 1.0)
+    cfd.setdefault("u_tau_frac_w1", 0.05)
+    cfd.setdefault("te_angular_min", 10)
+    cfd.setdefault("stack_after_child_ok", False)
     job.setdefault("output_dir", "output")
     job.setdefault("geometry_test", False)
     g = job["geometry"]

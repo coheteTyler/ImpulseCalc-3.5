@@ -224,7 +224,10 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         g["profile_family"] = "impulse_bucket"
     g.pop("profile_points", None)
     g.pop("goldman", None)
-    g["n_blades_cascade"] = 3  # mesh/validate lock; outline PNG stacks 5 for photo frame
+    if k.get("n_blades_cascade") not in (None, ""):
+        g["n_blades_cascade"] = int(k["n_blades_cascade"])
+    else:
+        g["n_blades_cascade"] = int(g.get("n_blades_cascade") or 3)
     if k.get("stagger_deg") in (None, "") and k.get("stagger") in (None, ""):
         b1 = float(g.get("beta1_flow_deg") or 72.0)
         b2 = float(g.get("beta2_flow_deg") or -72.0)
@@ -345,17 +348,25 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         if k.get(src) not in (None, ""):
             cfd[dst] = cast(k[src])
     if k.get("x_up_c") in (None, ""):
-        cfd["x_up_c"] = 1.5
+        cfd["x_up_c"] = 0.95
     if k.get("x_dn_c") in (None, ""):
-        cfd["x_dn_c"] = 6.0
+        cfd["x_dn_c"] = 2.5
     if k.get("n_outlet") in (None, ""):
         cfd["n_outlet"] = 28
+    if k.get("n_radial") in (None, ""):
+        cfd["n_radial"] = 20
+    if k.get("stretch") in (None, ""):
+        cfd["stretch"] = 1.12
+    if k.get("n_pitch_fill") in (None, ""):
+        cfd["n_pitch_fill"] = 40
     cfd["outlet_p"] = "waveTransmissive"
-    # Knobs preview CFD path: hybrid O + TE dump H + passage triangles (one pitch).
+    # Knobs preview CFD path: 3-blade closed-O HOH. Hybrid is donor fallback only.
     if k.get("mesh") not in (None, ""):
         cfd["mesh"] = str(k["mesh"])
     else:
-        cfd["mesh"] = "hybrid_OH_tri"
+        cfd["mesh"] = "hoh"
+    if str(cfd.get("mesh") or "").lower() == "hoh":
+        g["n_blades_cascade"] = 3
     for src, cast in (
         ("h_le", float),
         ("h_pass", float),
@@ -454,12 +465,11 @@ def _plot_poly_preview(dest_png, case_png, poly, job, note=""):
         zorder=3,
     )
     ax.text(x_le - 0.08 * c_mm, y_mid + 0.06 * (y_top - y_bot), r"$W_1$", color="#7c5cff", fontsize=8)
-    # θ arc marker: vertical upright to W1
-    theta_v = 90.0 - abs(b1)
+    # β from +x (axial), positive toward +y — one convention with writer + U BC.
     ax.text(
         x_le - 0.02 * c_mm,
         y_mid + 0.22 * L,
-        rf"$\theta\approx{theta_v:.0f}^\circ$ (from vertical)",
+        rf"$\beta_1={b1:.0f}^\circ$ (from +x)",
         color="#e8e6f2",
         fontsize=7,
     )

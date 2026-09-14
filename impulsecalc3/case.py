@@ -97,12 +97,16 @@ def _cyclic_empty_walls(
     n_blades: int = 3, cyclic: bool = True, lid_walls: bool = False
 ) -> tuple[str, str]:
     """U vs scalar patch blocks for the shared topology."""
-    blades_u = "\n".join(
-        f"            blade{k} {{ type noSlip; }}" for k in range(n_blades)
-    )
-    blades_s = "\n".join(
-        f"            blade{k} {{ type zeroGradient; }}" for k in range(n_blades)
-    )
+    if n_blades <= 0:
+        blades_u = "            blades { type noSlip; }"
+        blades_s = "            blades { type zeroGradient; }"
+    else:
+        blades_u = "\n".join(
+            f"            blade{k} {{ type noSlip; }}" for k in range(n_blades)
+        )
+        blades_s = "\n".join(
+            f"            blade{k} {{ type zeroGradient; }}" for k in range(n_blades)
+        )
     if cyclic:
         cyc = "            bottom { type cyclic; }\n            top    { type cyclic; }\n"
     elif lid_walls:
@@ -208,6 +212,9 @@ def write_schemes(case_dir: Path) -> None:
 def write_solution(case_dir: Path) -> None:
     text = _hdr("dictionary", "fvSolution") + textwrap.dedent(
         """\
+        PIMPLE {
+            nNonOrthogonalCorrectors 3;
+        }
         solvers {
             "(rho|rhoU|rhoE).*" { solver diagonal; }
             "U.*" {
@@ -427,7 +434,8 @@ def write_fields(case_dir: Path, job: dict[str, Any], ml: Meanline) -> None:
     x_in, x_out = domain_x(job)
     l_inf = max(x_out - float(job["geometry"]["chord_m"]), 0.02)
     outlet_kind = str(cfd.get("outlet_p", "waveTransmissive"))
-    n_blades = int(job.get("_n_blades_patches") or 3)
+    raw_nb = job.get("_n_blades_patches")
+    n_blades = 3 if raw_nb is None else int(raw_nb)
     cyclic = bool(job.get("_cyclic_pitch", True))
     lid_walls = bool(job.get("_lid_walls", False))
     u_shared, s_shared = _cyclic_empty_walls(n_blades=n_blades, cyclic=cyclic, lid_walls=lid_walls)
@@ -616,10 +624,60 @@ def _write_case_unlocked(
 
     poly = profile_from_job(job, spec)
     mesh = write_polymesh(case_dir, job, spec, poly=poly)
+    # y+≈1 wall O implies extreme AR; raise checkMesh thresholds so topology/skew
+    # still gate, while AR from Nn=20/r=1.12/y1 is not a false Failed.
+    _sys = case_dir / "system"
+    _sys.mkdir(parents=True, exist_ok=True)
+    _mq = (
+        "/* ImpulseCalc3 mesh quality — Goldman O–H y+≈1 wall O (OpenFOAM v2412 keys) */\n"
+        "FoamFile\n"
+        "{\n"
+        "    version     2.0;\n"
+        "    format      ascii;\n"
+        "    class       dictionary;\n"
+        "    object      meshQualityDict;\n"
+        "}\n"
+        "maxNonOrtho 70;\n"
+        "maxBoundarySkewness 50;\n"
+        "maxInternalSkewness 50;\n"
+        "maxConcave 80;\n"
+        "maxAspectRatio 1e12;\n"
+        "minVol -1e30;\n"
+        "minTetQuality -1e30;\n"
+        "minArea -1;\n"
+        "minTwist -1;\n"
+        "minDeterminant -1;\n"
+        "minFaceWeight -1;\n"
+        "minVolRatio -1;\n"
+        "minTriangleTwist -1;\n"
+        "minEdgeLength -1;\n"
+    )
+    (_sys / "meshQualityDict").write_text(_mq)
+    (_sys / "checkMeshDict").write_text(_mq.replace("meshQualityDict", "checkMeshDict"))
     n_b = len([k for k in mesh.patches if str(k).startswith("blade")])
+    mesh_kind = str(mesh.mesh_kind or "")
+    if mesh_kind in ("hybrid_OH_tri", "hybrid_oh_tri", "hybrid"):
+        need = ("blade0", "blade1", "blade2")
+        missing = [n for n in need if not mesh.patches.get(n)]
+        if missing or n_b != 3:
+            raise RuntimeError(
+                f"hybrid_OH_tri case refuse: blade patches missing={missing} n_b={n_b} "
+                f"n_cells={mesh.n_cells}; /mesh must not write one-blade hybrid"
+            )
+        if mesh.n_cells < 80000:
+            raise RuntimeError(
+                f"hybrid_OH_tri case refuse: n_cells={mesh.n_cells} looks like one-pitch; "
+                "expected ~3× (~120k+)"
+            )
     job["_n_blades_patches"] = n_b
     job["_lid_walls"] = mesh.mesh_kind == "cassette_OH"
-    job["_cyclic_pitch"] = (mesh.mesh_kind in ("body_fitted_OH", "hybrid_OH_tri")) and bool(mesh.patches.get("bottom"))
+    job["_cyclic_pitch"] = (
+        mesh.mesh_kind in ("body_fitted_OH", "hybrid_OH_tri", "hoh")
+        and bool(mesh.patches.get("bottom"))
+    )
+    if mesh.mesh_kind == "hoh":
+        # HOH polyMesh uses one "blades" patch, not blade0/1/2.
+        job["_n_blades_patches"] = 0
     write_thermophysical(case_dir, job)
     write_schemes(case_dir)
     write_solution(case_dir)

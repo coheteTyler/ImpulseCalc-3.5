@@ -1,0 +1,82 @@
+{
+  "pass": false,
+  "checks": {
+    "n_blades_3": true,
+    "not_rectangle": true,
+    "cyclic_nfaces": true,
+    "inlet_p50": true,
+    "dump_p50": true,
+    "le_p50": true,
+    "te_p50": true,
+    "mid_passage_p50": true,
+    "max_skew": true,
+    "frac70": false,
+    "n_cells_band": true,
+    "tagged_sites": true,
+    "cyclic_translate": true
+  },
+  "max_nonortho_deg": 85.85250286893191,
+  "max_skew": 11.300656636801383,
+  "n_cells": 29472,
+  "n_blades": 3,
+  "cyclic_ystdev_over_pitch": 0.15154093907395536,
+  "where": {
+    "inlet": {
+      "n": 8278,
+      "max": 85.60518042921122,
+      "p50": 0.2641576407417845,
+      "n_gt_50": 216
+    },
+    "dump": {
+      "n": 11302,
+      "max": 81.87736650320085,
+      "p50": 8.000252753656824,
+      "n_gt_50": 1332
+    },
+    "LE": {
+      "n": 8419,
+      "max": 85.85250286893191,
+      "p50": 1.0411737243911867,
+      "n_gt_50": 3467
+    },
+    "TE": {
+      "n": 13128,
+      "max": 72.96075860440969,
+      "p50": 1.451309765160144,
+      "n_gt_50": 5434
+    },
+    "passage": {
+      "n": 17267,
+      "max": 61.623471840928005,
+      "p50": 7.297987293948167,
+      "n_gt_50": 3165
+    }
+  },
+  "mid_passage_p50": 7.297987293948167,
+  "frac70": 0.023221563859300614,
+  "sliver_tagged": 0,
+  "y_plus_est": 1.0,
+  "h0": 6.063157894736842e-07,
+  "Nn": 20,
+  "Ns": 160,
+  "repair_attempt": 0,
+  "cyclic_Y": 0.02638800928857927,
+  "nfaces": {
+    "inlet": 180,
+    "outlet": 180,
+    "bottom": 124,
+    "top": 124,
+    "blades": 480,
+    "frontAndBack": 0
+  },
+  "notes": [
+    "mesh fillets 0.04c, metal CAD may stay sharp.",
+    "h0=6.063e-07 y+=1.0 u_tau=0.05*|W1|=47.5 (HOT mu=4.5e-05 rho=1.5625 W1=950.0)",
+    "shared-edge O views: Nle=12 Nte=12 Nside=68 Ns=160",
+    "inlet/dump H axial (+x); W1-aligned tails banned under vertical cyclic",
+    "inlet edge not within 15\u00b0 of perp W1 \u2014 cyclic forces vertical ends (do not box)",
+    "outlet edge not within 15\u00b0 of perp W2 \u2014 cyclic forces vertical ends",
+    "sliver pass: off (closed-O writer)"
+  ],
+  "solvable": true
+}
