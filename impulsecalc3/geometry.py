@@ -1,6 +1,6 @@
 """2D cascade metal: circular-arc foil, dual-arc impulse bucket, or points.
 
-Live 8766 / knobs metal: `impulse_bucket` — two circular arcs (outer/inner sagittas)
+Live 8766 / knobs metal: `pritchard_11` (Pritchard 11-param; LE/TE via le_r/te_r). Legacy `impulse_bucket` — two circular arcs (outer/inner sagittas)
 plus pointed LE/TE tips (converging straights meet at T; G1 fillet).
 Lin=Lout=0: T at dual-arc ends; fillet = offset-curve intersection (G1 to both arcs).
 Closed CCW.
@@ -634,6 +634,11 @@ def profile_from_job(
     if raw:
         return profile_from_points(raw)
     fam = str(_gget(g, "profile_family", "family", "profile", default="") or "").lower()
+    if fam in (
+        "pritchard_11", "pritchard11", "pritchard", "eleven_parameter", "11param",
+    ):
+        from .pritchard import pritchard_profile_from_job
+        return pritchard_profile_from_job(job)
     if fam in (
         "impulse_bucket", "dual_arc", "pelton", "bucket", "cup",
         "goldman", "goldman_vortex", "vortex_impulse",

@@ -149,7 +149,7 @@ def _effective_knobs(post_knobs: dict[str, Any] | None = None) -> dict[str, Any]
     if lock.get("locked") and isinstance(lock.get("design"), dict):
         prof = merge_design_into_profile(_load_profile_disk(), lock["design"])
         knobs = profile_to_ic3_knobs(prof)
-        knobs["family"] = "impulse_bucket"
+        knobs["family"] = "pritchard_11"
         # If full job JSON was imported, prefer its geometry block via knobs_to_job merge.
         d = lock["design"]
         if isinstance(d.get("geometry"), dict):
@@ -159,10 +159,10 @@ def _effective_knobs(post_knobs: dict[str, Any] | None = None) -> dict[str, Any]
         return knobs
     if isinstance(post_knobs, dict) and post_knobs:
         out = dict(post_knobs)
-        out.setdefault("family", "impulse_bucket")
+        out.setdefault("family", "pritchard_11")
         return out
     knobs = profile_to_ic3_knobs(_load_profile_disk())
-    knobs["family"] = "impulse_bucket"
+    knobs["family"] = "pritchard_11"
     return knobs
 
 
@@ -1167,7 +1167,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {
-                    "family": "impulse_bucket",
+                    "family": "pritchard_11",
                     "hu_mm": 5.0,
                     "hl_mm": 2.2,
                     "le_mm": 0.4,
@@ -1251,7 +1251,7 @@ class Handler(BaseHTTPRequestHandler):
                 PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
                 PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
                 mapped = profile_to_ic3_knobs(base)
-                mapped["family"] = "impulse_bucket"
+                mapped["family"] = "pritchard_11"
                 self._json(
                     200,
                     {
@@ -1324,7 +1324,7 @@ class Handler(BaseHTTPRequestHandler):
             PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
             PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
             mapped = profile_to_ic3_knobs(base)
-            mapped["family"] = "impulse_bucket"
+            mapped["family"] = "pritchard_11"
             self._json(
                 200,
                 {

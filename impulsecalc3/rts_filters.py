@@ -55,15 +55,15 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
                 "label": "Vertical (chord)",
                 "intent": "chord",
                 "keys": [
-                    {"rts": "rotorValues.chord", "id": "chord_mm", "label": "Chord", "sym": "c", "unit": "mm", "default": 18.0},
+                    {"rts": "rotorValues.chord", "id": "chord_mm", "label": "Chord", "sym": "c", "unit": "mm", "default": 10.0},
                 ],
             },
             "horizontal": {
                 "label": "Horizontal (pitch / diameter)",
                 "intent": "horizontal",
                 "keys": [
-                    {"rts": "cycle.d_m", "id": "dm_mm", "label": "Mean diameter", "sym": "dm", "unit": "mm", "default": 88.9},
-                    {"rts": "rotorValues.N", "id": "Z", "label": "Blade count (machine)", "sym": "Z", "unit": "—", "default": 36},
+                    {"rts": "cycle.d_m", "id": "dm_mm", "label": "Mean diameter", "sym": "dm", "unit": "mm", "default": 75.0},
+                    {"rts": "rotorValues.N", "id": "Z", "label": "Blade count (machine)", "sym": "N", "unit": "—", "default": 25},
                     {"rts": "(derived σ=c/s)", "id": "solidity", "label": "Solidity (derived c/s)", "sym": "σ", "unit": "—", "default": 1.4, "derived": True, "readonly": True},
                     {"rts": "cycle.degree_of_admission", "id": "epsilon", "label": "Admission", "sym": "ε", "unit": "—", "default": 1.0},
                 ],
@@ -80,47 +80,56 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
     "metal": {
         "id": "metal",
         "label": "Metal",
-        "hint": "Rotor metal only. Stator omitted — inlet gas carries post-nozzle state.",
+        "hint": "Pritchard 11-param rotor metal. LE/TE fillets via le_mm/te_mm only (ratios demoted). No Lin/Lout stems. Stator omitted.",
         "color": "#2a7a68",
         "css": "sys-metal",
         "subgroups": {
-            "profile": {
-                "label": "Profile / fillets",
+            "pritchard": {
+                "label": "Pritchard 11-param",
                 "keys": [
-                    {"rts": "rotorValues.r_le_ratio", "id": "r_le_ratio", "label": "LE radius / chord", "sym": "rLE/c", "unit": "—", "default": 0.04},
-                    {"rts": "rotorValues.r_te_ratio", "id": "r_te_ratio", "label": "TE radius / chord", "sym": "rTE/c", "unit": "—", "default": 0.04},
+                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Inlet blade angle βi", "sym": "βi", "unit": "deg", "default": 65.0},
+                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Exit blade angle βo (impulse: βo ≈ −βi)", "sym": "βo", "unit": "deg", "default": -65.0, "hint": "impulse: βo ≈ −βi"},
                     {"rts": "rotorValues.unguided_turning", "id": "unguided_turning_deg", "label": "Unguided turning", "sym": "θu", "unit": "deg", "default": 8.0},
-                    {"rts": "rotorValues.t_ri", "id": "t_ri_mm", "label": "Inlet gap", "sym": "tri", "unit": "mm", "default": 3.0},
-                    {"rts": "rotorValues.gamma_turning_ri", "id": "gamma_turning_ri_deg", "label": "Inlet turning wedge", "sym": "γri", "unit": "deg", "default": -10.0},
-                    {"rts": "cycle.gamma_ri", "id": "gamma_ri_deg", "label": "Rotor inlet wedge", "sym": "γri,wedge", "unit": "deg", "default": 8.0},
-                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Relative exit from axial (impulse: β2 ≈ −β1)", "sym": "β2", "unit": "deg", "default": -65.0, "hint": "impulse: β2 ≈ −β1"},
+                    {"rts": "cycle.gamma_ri", "id": "epsilon_i_deg", "label": "Inlet half-wedge εi", "sym": "εi", "unit": "deg", "default": 10.0},
+                    {"rts": "rotorValues.t_ri", "id": "throat_mm", "label": "Geometric throat", "sym": "o", "unit": "mm", "default": 2.356, "hint": "Default ≈ 0.25·pitch at R=37.5 mm, Z=25"},
+                    {"rts": "(ic3)", "id": "throat_pitch_ratio", "label": "Throat / pitch (if throat_mm empty)", "sym": "o/s", "unit": "—", "default": 0.25},
+                    {"rts": "(ic3)", "id": "cx_mm", "label": "Axial chord cx", "sym": "cx", "unit": "mm", "default": 10.0},
+                    {"rts": "(ic3)", "id": "ct_mm", "label": "Tangential chord ct (stagger)", "sym": "ct", "unit": "mm", "default": 0.0},
                     {"rts": "cycle.reaction", "id": "reaction", "label": "Degree of reaction", "sym": "R", "unit": "—", "default": 0.0},
                 ],
             },
-            "ic3_mm": {
-                "label": "ImpulseCalc3 absolute metal (mm)",
+            "fillets": {
+                "label": "LE / TE fillets (absolute — only drivers)",
                 "keys": [
-                    {"rts": "(ic3)", "id": "hu_mm", "label": "Upper sagitta", "sym": "hu", "unit": "mm", "default": 6.5},
-                    {"rts": "(ic3)", "id": "hl_mm", "label": "Lower sagitta", "sym": "hl", "unit": "mm", "default": 1.5},
-                    {"rts": "(ic3)", "id": "le_mm", "label": "LE fillet", "sym": "rLE", "unit": "mm", "default": 0.4},
-                    {"rts": "(ic3)", "id": "te_mm", "label": "TE fillet", "sym": "rTE", "unit": "mm", "default": 0.0},
-                    {"rts": "(ic3)", "id": "lin_mm", "label": "Inlet straight", "sym": "Lin", "unit": "mm", "default": 0.0},
-                    {"rts": "(ic3)", "id": "lout_mm", "label": "Outlet straight", "sym": "Lout", "unit": "mm", "default": 0.0},
-                    {"rts": "(ic3)", "id": "passage_depth_mm", "label": "Passage depth (fillet-foot clearance)", "sym": "g_pass", "unit": "mm", "default": None, "hint": "Auto = min dist from fillet-metal foot (or tip) to blade below"},
-                    {"rts": "(ic3)", "id": "constant_passage_width", "label": "Constant passage width", "sym": "g≈const", "unit": "flag", "default": False, "hint": "Rebuild facing walls concentric (ΔR=g_pass). hl slaved; hu/fillets free. Pitch too if g_pass is set."},
+                    {"rts": "(ic3)", "id": "le_mm", "label": "LE radius le_r", "sym": "le_r", "unit": "mm", "default": 0.4, "hint": "Only LE fillet driver. Default 0.04·chord."},
+                    {"rts": "(ic3)", "id": "te_mm", "label": "TE radius te_r", "sym": "te_r", "unit": "mm", "default": 0.4, "hint": "Only TE fillet driver. Default 0.04·chord. te_mm=0 no longer wins over a ratio — omit te_mm to use demoted r_te_ratio."},
+                    {"rts": "rotorValues.r_le_ratio", "id": "r_le_ratio", "label": "LE radius / chord (demoted)", "sym": "rLE/c", "unit": "—", "default": 0.04, "hint": "Demoted: used only if le_mm absent."},
+                    {"rts": "rotorValues.r_te_ratio", "id": "r_te_ratio", "label": "TE radius / chord (demoted)", "sym": "rTE/c", "unit": "—", "default": 0.04, "hint": "Demoted: used only if te_mm absent. Cannot zero TE when te_mm is set."},
+                ],
+            },
+            "legacy_bucket": {
+                "label": "Legacy dual-arc bucket (not default)",
+                "keys": [
+                    {"rts": "(ic3)", "id": "hu_mm", "label": "Upper sagitta (legacy)", "sym": "hu", "unit": "mm", "default": None},
+                    {"rts": "(ic3)", "id": "hl_mm", "label": "Lower sagitta (legacy)", "sym": "hl", "unit": "mm", "default": None},
+                    {"rts": "(ic3)", "id": "lin_mm", "label": "Inlet straight (ignored for Pritchard)", "sym": "Lin", "unit": "mm", "default": 0.0},
+                    {"rts": "(ic3)", "id": "lout_mm", "label": "Outlet straight (ignored for Pritchard)", "sym": "Lout", "unit": "mm", "default": 0.0},
+                    {"rts": "(ic3)", "id": "passage_depth_mm", "label": "Passage depth (fillet-foot clearance)", "sym": "g_pass", "unit": "mm", "default": None},
+                    {"rts": "(ic3)", "id": "constant_passage_width", "label": "Constant passage width", "sym": "g≈const", "unit": "flag", "default": False},
                 ],
             },
         },
     },
 }
 
+# Smart
 # Smart intents: selecting an intent surfaces related keys even if not one RTS var.
 SMART_INTENTS: dict[str, list[str]] = {
     "inlet": ["p1_Pa", "T1_K", "mdot_kg_s", "gamma", "cp_J_kgK", "Mmol_kg_kmol", "beta1_deg", "W1_m_s", "eta_n"],
     "horizontal": ["dm_mm", "Z", "solidity", "epsilon", "chord_mm"],
     "vertical": ["chord_mm", "hu_mm", "hl_mm", "solidity"],
     "size": ["dm_mm", "chord_mm", "Z", "solidity", "epsilon", "omega_rps"],
-    "metal": ["hu_mm", "hl_mm", "le_mm", "te_mm", "lin_mm", "lout_mm", "passage_depth_mm", "constant_passage_width", "r_le_ratio", "r_te_ratio", "unguided_turning_deg", "beta2_deg", "reaction"],
+    "metal": ["beta1_deg", "beta2_deg", "unguided_turning_deg", "epsilon_i_deg", "throat_mm", "throat_pitch_ratio", "cx_mm", "ct_mm", "le_mm", "te_mm", "chord_mm", "Z", "r_le_ratio", "r_te_ratio", "reaction"],
     "flow_rate": ["mdot_kg_s", "p1_Pa", "T1_K", "W1_m_s", "dm_mm", "epsilon"],
 }
 
@@ -207,7 +216,8 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
 
     TE fillet path: values.te_mm → knobs.te_mm → geometry.te_fillet_r_m
     (preview.knobs_to_job). values.r_te_ratio → te_fillet_r_c when te_mm absent.
-    Absolute te_mm (incl. 0) wins over ratio.
+    Absolute te_mm wins when set and >0; te_mm=0 is treated as unset for Pritchard
+    (map r_te_ratio·chord) so a zero cannot kill TE. Default family: pritchard_11.
     """
     v = profile.get("values") or profile
     knobs: dict[str, Any] = {}
@@ -234,40 +244,78 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
     ):
         if src in v and v[src] not in (None, ""):
             knobs[dst] = v[src]
-    # Absolute fillet aliases (m or mm) → mm knobs consumed by knobs_to_job.
+    # Absolute fillet aliases (m or mm) → mm. ≤0 treated as unset.
     if "te_mm" not in knobs:
-        if v.get("te_fillet_r_m") not in (None, ""):
+        if v.get("te_fillet_r_m") not in (None, "") and float(v["te_fillet_r_m"]) > 0:
             knobs["te_mm"] = float(v["te_fillet_r_m"]) * 1e3
-        elif v.get("te_fillet_mm") not in (None, ""):
+        elif v.get("te_fillet_mm") not in (None, "") and float(v["te_fillet_mm"]) > 0:
             knobs["te_mm"] = float(v["te_fillet_mm"])
     if "le_mm" not in knobs:
-        if v.get("le_fillet_r_m") not in (None, ""):
+        if v.get("le_fillet_r_m") not in (None, "") and float(v["le_fillet_r_m"]) > 0:
             knobs["le_mm"] = float(v["le_fillet_r_m"]) * 1e3
-        elif v.get("le_fillet_mm") not in (None, ""):
+        elif v.get("le_fillet_mm") not in (None, "") and float(v["le_fillet_mm"]) > 0:
             knobs["le_mm"] = float(v["le_fillet_mm"])
-    # Chord-fraction fillets when absolute mm not driving.
-    if "te_mm" not in knobs:
-        ratio = v.get("r_te_ratio", v.get("te_fillet_r_c", v.get("te_radius_c")))
-        if ratio not in (None, ""):
-            knobs["te_fillet_r_c"] = float(ratio)
+    if knobs.get("te_mm") is not None and float(knobs["te_mm"]) <= 0:
+        knobs.pop("te_mm", None)
+    if knobs.get("le_mm") is not None and float(knobs["le_mm"]) <= 0:
+        knobs.pop("le_mm", None)
+
+    # Pritchard cx/ct independents (stagger = atan(ct/cx); chord = hypot).
+    for src, dst in (
+        ("unguided_turning_deg", "unguided_turning_deg"),
+        ("epsilon_i_deg", "epsilon_i_deg"),
+        ("throat_mm", "throat_mm"),
+        ("throat_pitch_ratio", "throat_pitch_ratio"),
+        ("cx_mm", "cx_mm"),
+        ("ct_mm", "ct_mm"),
+    ):
+        if src in v and v[src] not in (None, ""):
+            knobs[dst] = v[src]
+    cx_mm = float(knobs["cx_mm"]) if knobs.get("cx_mm") not in (None, "") else None
+    ct_mm = float(knobs["ct_mm"]) if knobs.get("ct_mm") not in (None, "") else 0.0
+    if cx_mm is not None:
+        chord_mm = (cx_mm ** 2 + ct_mm ** 2) ** 0.5
+        knobs["cx_mm"] = cx_mm
+        knobs["ct_mm"] = ct_mm
+        knobs["chord_mm"] = chord_mm
+        knobs["chord_m"] = chord_mm * 1e-3
+        knobs["cx_m"] = cx_mm * 1e-3
+        knobs["ct_m"] = ct_mm * 1e-3
+    elif "chord_mm" in v and v["chord_mm"] not in (None, ""):
+        knobs["chord_m"] = float(v["chord_mm"]) * 1e-3
+        knobs["chord_mm"] = float(v["chord_mm"])
+        chord_mm = float(v["chord_mm"])
     else:
-        # Still surface ratio for readout; absolute wins in knobs_to_job.
-        ratio = v.get("r_te_ratio", v.get("te_fillet_r_c", v.get("te_radius_c")))
-        if ratio not in (None, ""):
-            knobs["te_fillet_r_c"] = float(ratio)
+        chord_mm = float(knobs.get("chord_mm") or 10.0)
+        knobs["chord_mm"] = chord_mm
+        knobs["chord_m"] = chord_mm * 1e-3
+
+    # RTS ratios → absolute le_r/te_r using /chord (Pritchard length reference).
     if "le_mm" not in knobs:
         ratio = v.get("r_le_ratio", v.get("le_fillet_r_c", v.get("le_radius_c")))
         if ratio not in (None, ""):
-            knobs["le_fillet_r_c"] = float(ratio)
-    else:
-        ratio = v.get("r_le_ratio", v.get("le_fillet_r_c", v.get("le_radius_c")))
+            knobs["le_mm"] = float(ratio) * chord_mm
+        else:
+            knobs["le_mm"] = 0.04 * chord_mm
+    if "te_mm" not in knobs:
+        ratio = v.get("r_te_ratio", v.get("te_fillet_r_c", v.get("te_radius_c")))
         if ratio not in (None, ""):
-            knobs["le_fillet_r_c"] = float(ratio)
-    if "chord_mm" in v and v["chord_mm"] not in (None, ""):
-        knobs["chord_m"] = float(v["chord_mm"]) * 1e-3
+            knobs["te_mm"] = float(ratio) * chord_mm
+        else:
+            knobs["te_mm"] = 0.04 * chord_mm
+    # Surface demoted ratios for readout only (never drive when abs present).
+    knobs["r_le_ratio"] = float(knobs["le_mm"]) / max(chord_mm, 1e-9)
+    knobs["r_te_ratio"] = float(knobs["te_mm"]) / max(chord_mm, 1e-9)
+
     if "dm_mm" in v and v["dm_mm"] not in (None, ""):
         knobs["mean_radius_m"] = float(v["dm_mm"]) * 5e-4  # dm/2
-    knobs["family"] = "impulse_bucket"
+        knobs["dm_mm"] = float(v["dm_mm"])
+
+    # FIELD-path family. Stems off (Goldman L_in/L_out are not Pritchard radii).
+    knobs["family"] = "pritchard_11"
+    knobs["profile_family"] = "pritchard_11"
+    knobs["lin_mm"] = 0.0
+    knobs["lout_mm"] = 0.0
     return knobs
 
 
@@ -347,6 +395,22 @@ def design_to_profile_values(design: dict[str, Any]) -> dict[str, Any]:
             if src.get(k) not in (None, ""):
                 out[dst] = float(src[k])
                 break
+    for dst, keys in (
+        ("unguided_turning_deg", ("unguided_turning_deg", "unguided_turning")),
+        ("epsilon_i_deg", ("epsilon_i_deg", "inlet_half_wedge_deg", "epsilon_i")),
+        ("throat_mm", ("throat_mm", "throat_m")),
+        ("throat_pitch_ratio", ("throat_pitch_ratio", "throat_ratio")),
+        ("cx_mm", ("cx_mm", "cx_m", "axial_chord_m")),
+        ("ct_mm", ("ct_mm", "ct_m", "tangential_chord_m")),
+    ):
+        for k in keys:
+            if src.get(k) not in (None, ""):
+                val = float(src[k])
+                if k.endswith("_m") and not k.endswith("_mm"):
+                    out[dst] = val * 1e3
+                else:
+                    out[dst] = val
+                break
     if src.get("pitch_m") not in (None, ""):
         out["s_mm"] = float(src["pitch_m"]) * 1e3
     elif src.get("s_mm") not in (None, ""):
@@ -382,7 +446,7 @@ def apply_constant_passage_to_profile(profile: dict) -> tuple[dict, dict]:
         return profile, {"ok": True, "enabled": False}
 
     knobs = profile_to_ic3_knobs(profile)
-    knobs["family"] = "impulse_bucket"
+    knobs["family"] = "pritchard_11"
     knobs["constant_passage_width"] = False
     if v.get("passage_depth_mm") not in (None, ""):
         knobs["passage_depth_mm"] = float(v["passage_depth_mm"])
@@ -411,7 +475,7 @@ def auto_passage_depth_for_profile(profile: dict) -> tuple[dict, dict]:
         return profile, {"ok": False, "reason": "no profile"}
     v = profile.setdefault("values", {})
     knobs = profile_to_ic3_knobs(profile)
-    knobs["family"] = "impulse_bucket"
+    knobs["family"] = "pritchard_11"
     knobs["constant_passage_width"] = False
     job = knobs_to_job(knobs)
     meas = measure_fillet_foot_clearance(job)

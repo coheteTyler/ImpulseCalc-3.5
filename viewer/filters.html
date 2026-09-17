@@ -227,7 +227,7 @@ function paintLockUI() {
 }
 
 async function rebuildOutline(knobs) {
-  const body = Object.assign({ family: "impulse_bucket" }, knobs || {});
+  const body = Object.assign({ family: "pritchard_11" }, knobs || {});
   const r = await fetch("/outline", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

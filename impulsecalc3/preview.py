@@ -7,6 +7,8 @@ Authority of a preview PNG is always SCOPING.
 
 from __future__ import annotations
 
+import math
+
 import copy
 import json
 import shutil
@@ -29,6 +31,8 @@ from .times import compute_times
 from .job import domain_x
 
 TEMPLATE_CUP = ROOT / "configs" / "geom_impulse_bucket.json"
+TEMPLATE_PRITCHARD = ROOT / "configs" / "geom_pritchard_11.json"
+TEMPLATE_PRITCHARD_LEGACY = ROOT / "configs" / "geom_pritchard11.json"
 TEMPLATE_FOIL = ROOT / "configs" / "geom_foil.json"
 TEMPLATE_POINTS = ROOT / "configs" / "geom_points.json"
 APP_OUTPUT = "output/geom_tests/knobs_preview"
@@ -50,7 +54,11 @@ def _family_key(raw: Any) -> str:
         return "points"
     if s in ("goldman", "goldman_vortex", "vortex_impulse"):
         return "goldman"
-    return "cup"
+    if s in ("pritchard_11", "pritchard11", "pritchard", "eleven_parameter", "11param"):
+        return "pritchard_11"
+    if s in ("impulse_bucket", "dual_arc", "pelton", "bucket", "cup"):
+        return "cup"
+    return "pritchard_11"
 
 
 def template_path_for(family: str) -> Path:
@@ -59,6 +67,12 @@ def template_path_for(family: str) -> Path:
         return TEMPLATE_FOIL if TEMPLATE_FOIL.is_file() else (ROOT / "configs" / "marlin_v2_rotor.json")
     if fam == "points":
         return TEMPLATE_POINTS
+    if fam == "pritchard_11":
+        return (
+            TEMPLATE_PRITCHARD if TEMPLATE_PRITCHARD.is_file()
+            else TEMPLATE_PRITCHARD_LEGACY if TEMPLATE_PRITCHARD_LEGACY.is_file()
+            else TEMPLATE_CUP
+        )
     return TEMPLATE_CUP
 
 
@@ -101,7 +115,7 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
     if isinstance(k.get("geometry"), dict):
         k = {**k, **k["geometry"]}
     # One solver: pointed-tip impulse bucket (default) or circular-arc foil. Not MOC.
-    fam = _family_key(k.get("family") or k.get("profile_family") or "cup")
+    fam = _family_key(k.get("family") or k.get("profile_family") or "pritchard_11")
     base = copy.deepcopy(template or _template(fam))
     base["format"] = FORMAT
     base["name"] = APP_NAME
@@ -190,6 +204,42 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         g["te_fillet_r_m"] = float(k["te_mm"]) * 1e-3
         g.pop("te_radius_c", None)
         g.pop("te_fillet_r_c", None)
+    # Pritchard 11-param metal knobs (angles deg in UI → stored deg; generator converts).
+    for src, dst in (
+        ("unguided_turning_deg", "unguided_turning_deg"),
+        ("epsilon_i_deg", "epsilon_i_deg"),
+        ("inlet_half_wedge_deg", "epsilon_i_deg"),
+        ("throat_mm", "throat_mm"),
+        ("throat_pitch_ratio", "throat_pitch_ratio"),
+        ("cx_mm", "cx_mm"),
+        ("ct_mm", "ct_mm"),
+        ("cx_m", "cx_m"),
+        ("ct_m", "ct_m"),
+        ("beta_i_deg", "beta_i_deg"),
+        ("beta_o_deg", "beta_o_deg"),
+        ("le_r_mm", "le_mm"),
+        ("te_r_mm", "te_mm"),
+    ):
+        if src in k and k[src] not in (None, ""):
+            g[dst] = k[src]
+            if dst in ("le_mm", "te_mm"):
+                g[dst.replace("mm", "fillet_r_m").replace("le_fillet_r_m", "le_fillet_r_m").replace("te_fillet_r_m", "te_fillet_r_m")] = float(k[src]) * 1e-3
+    if k.get("le_r_mm") not in (None, ""):
+        g["le_mm"] = float(k["le_r_mm"])
+        g["le_fillet_r_m"] = float(k["le_r_mm"]) * 1e-3
+        g.pop("le_radius_c", None)
+        g.pop("le_fillet_r_c", None)
+    if k.get("te_r_mm") not in (None, ""):
+        g["te_mm"] = float(k["te_r_mm"])
+        g["te_fillet_r_m"] = float(k["te_r_mm"]) * 1e-3
+        g.pop("te_radius_c", None)
+        g.pop("te_fillet_r_c", None)
+    if k.get("throat_mm") not in (None, ""):
+        g["throat_m"] = float(k["throat_mm"]) * 1e-3
+    if k.get("cx_mm") not in (None, ""):
+        g["cx_m"] = float(k["cx_mm"]) * 1e-3
+    if k.get("ct_mm") not in (None, ""):
+        g["ct_m"] = float(k["ct_mm"]) * 1e-3
     if k.get("lin_mm") not in (None, ""):
         g["lin_m"] = float(k["lin_mm"]) * 1e-3
     if k.get("lout_mm") not in (None, ""):
@@ -220,15 +270,87 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         g.setdefault("te_radius_c", g["te_fillet_r_c"])
     if fam == "foil":
         g["profile_family"] = "circular_arc_camber_metal_angles"
-    else:
+    elif fam == "pritchard_11":
+        g["profile_family"] = "pritchard_11"
+    elif fam == "cup":
         g["profile_family"] = "impulse_bucket"
+    else:
+        g["profile_family"] = "pritchard_11"
     g.pop("profile_points", None)
+    if fam == "pritchard_11" or g.get("profile_family") == "pritchard_11":
+        # Pure Pritchard: no Goldman L_in/L_out stems (straights // flow ≠ radii).
+        g["lin_m"] = 0.0
+        g["lout_m"] = 0.0
+        g.pop("lin_mm", None)
+        g.pop("lout_mm", None)
+        # cx/ct independent; chord & stagger dependent.
+        cx = g.get("cx_m")
+        ct = g.get("ct_m")
+        if cx not in (None, "") or ct not in (None, ""):
+            cx_f = float(cx if cx not in (None, "") else (g.get("chord_m") or 0.01))
+            ct_f = float(ct if ct not in (None, "") else 0.0)
+            g["cx_m"] = cx_f
+            g["ct_m"] = ct_f
+            g["chord_m"] = math.hypot(cx_f, ct_f)
+            g["stagger_deg"] = math.degrees(math.atan2(ct_f, cx_f))
+        else:
+            # Metal-law stagger from β* — do not free-rotate while freezing β*.
+            b1 = float(g.get("beta1_metal_deg") or g.get("beta1_flow_deg") or 65.0)
+            b2 = float(g.get("beta2_metal_deg") or g.get("beta2_flow_deg") or -65.0)
+            g["stagger_deg"] = 0.5 * (b1 + b2)
+            c = float(g.get("chord_m") or 0.01)
+            sr = math.radians(g["stagger_deg"])
+            g["cx_m"] = c * math.cos(sr)
+            g["ct_m"] = c * math.sin(sr)
+        c_ref = float(g["chord_m"])
+        # Absolute le_r/te_r only drivers; ≤0 → unset → ratio·chord (RTS /c).
+        def _abs_or_ratio(abs_m_key, mm_key, ratio_keys, out_m, out_mm):
+            abs_v = g.get(abs_m_key)
+            if abs_v not in (None, "") and float(abs_v) > 0:
+                g[out_m] = float(abs_v)
+                g[out_mm] = float(abs_v) * 1e3
+                return
+            if g.get(mm_key) not in (None, "") and float(g[mm_key]) > 0:
+                g[out_m] = float(g[mm_key]) * 1e-3
+                g[out_mm] = float(g[mm_key])
+                return
+            ratio = None
+            for rk in ratio_keys:
+                if g.get(rk) not in (None, "") or k.get(rk) not in (None, ""):
+                    ratio = float(g[rk] if g.get(rk) not in (None, "") else k[rk])
+                    break
+            if ratio is None:
+                ratio = 0.04
+            g[out_m] = float(ratio) * c_ref
+            g[out_mm] = g[out_m] * 1e3
+        _abs_or_ratio(
+            "le_fillet_r_m", "le_mm",
+            ("r_le_ratio", "le_fillet_r_c", "le_radius_c"),
+            "le_fillet_r_m", "le_mm",
+        )
+        _abs_or_ratio(
+            "te_fillet_r_m", "te_mm",
+            ("r_te_ratio", "te_fillet_r_c", "te_radius_c"),
+            "te_fillet_r_m", "te_mm",
+        )
+        # Demote ratio keys so they cannot re-zero after abs resolve.
+        for rk in ("le_radius_c", "le_fillet_r_c", "te_radius_c", "te_fillet_r_c"):
+            g.pop(rk, None)
     g.pop("goldman", None)
     if k.get("n_blades_cascade") not in (None, ""):
         g["n_blades_cascade"] = int(k["n_blades_cascade"])
     else:
         g["n_blades_cascade"] = int(g.get("n_blades_cascade") or 3)
-    if k.get("stagger_deg") in (None, "") and k.get("stagger") in (None, ""):
+    if fam == "pritchard_11" or g.get("profile_family") == "pritchard_11":
+        # Stagger already from atan(ct/cx). Only set metal β* from flow − i / + δ.
+        b1 = float(g.get("beta1_flow_deg") or 65.0)
+        b2 = float(g.get("beta2_flow_deg") or -65.0)
+        inc = float(g.get("incidence_deg") or 0.0)
+        dev = float(g.get("deviation_deg") or 0.0)
+        g["beta1_metal_deg"] = b1 - inc
+        g["beta2_metal_deg"] = b2 + dev
+        # Do NOT free-rotate stagger while freezing β*.
+    elif k.get("stagger_deg") in (None, "") and k.get("stagger") in (None, ""):
         b1 = float(g.get("beta1_flow_deg") or 72.0)
         b2 = float(g.get("beta2_flow_deg") or -72.0)
         inc = float(g.get("incidence_deg") or 0.0)
@@ -319,7 +441,7 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
             break
     rm = float(g.get("mean_radius_m") or 0.0)
     if rpm is not None and rpm > 0 and rm > 0:
-        import math
+        # math imported at module level
         gas["blade_speed_u_m_s"] = rpm * 2.0 * math.pi / 60.0 * rm
         gas["rpm"] = rpm
     if "mdot_engine_kg_s" in k and k["mdot_engine_kg_s"] not in (None, ""):
