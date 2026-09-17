@@ -203,7 +203,12 @@ def filter_keys(intent: str | None = None, group: str | None = None) -> list[dic
 
 
 def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
-    """Map central profile → ImpulseCalc3 knobs dict (mm + gas)."""
+    """Map central profile → ImpulseCalc3 knobs dict (mm + gas).
+
+    TE fillet path: values.te_mm → knobs.te_mm → geometry.te_fillet_r_m
+    (preview.knobs_to_job). values.r_te_ratio → te_fillet_r_c when te_mm absent.
+    Absolute te_mm (incl. 0) wins over ratio.
+    """
     v = profile.get("values") or profile
     knobs: dict[str, Any] = {}
     for src, dst in (
@@ -229,11 +234,133 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
     ):
         if src in v and v[src] not in (None, ""):
             knobs[dst] = v[src]
+    # Absolute fillet aliases (m or mm) → mm knobs consumed by knobs_to_job.
+    if "te_mm" not in knobs:
+        if v.get("te_fillet_r_m") not in (None, ""):
+            knobs["te_mm"] = float(v["te_fillet_r_m"]) * 1e3
+        elif v.get("te_fillet_mm") not in (None, ""):
+            knobs["te_mm"] = float(v["te_fillet_mm"])
+    if "le_mm" not in knobs:
+        if v.get("le_fillet_r_m") not in (None, ""):
+            knobs["le_mm"] = float(v["le_fillet_r_m"]) * 1e3
+        elif v.get("le_fillet_mm") not in (None, ""):
+            knobs["le_mm"] = float(v["le_fillet_mm"])
+    # Chord-fraction fillets when absolute mm not driving.
+    if "te_mm" not in knobs:
+        ratio = v.get("r_te_ratio", v.get("te_fillet_r_c", v.get("te_radius_c")))
+        if ratio not in (None, ""):
+            knobs["te_fillet_r_c"] = float(ratio)
+    else:
+        # Still surface ratio for readout; absolute wins in knobs_to_job.
+        ratio = v.get("r_te_ratio", v.get("te_fillet_r_c", v.get("te_radius_c")))
+        if ratio not in (None, ""):
+            knobs["te_fillet_r_c"] = float(ratio)
+    if "le_mm" not in knobs:
+        ratio = v.get("r_le_ratio", v.get("le_fillet_r_c", v.get("le_radius_c")))
+        if ratio not in (None, ""):
+            knobs["le_fillet_r_c"] = float(ratio)
+    else:
+        ratio = v.get("r_le_ratio", v.get("le_fillet_r_c", v.get("le_radius_c")))
+        if ratio not in (None, ""):
+            knobs["le_fillet_r_c"] = float(ratio)
     if "chord_mm" in v and v["chord_mm"] not in (None, ""):
         knobs["chord_m"] = float(v["chord_mm"]) * 1e-3
     if "dm_mm" in v and v["dm_mm"] not in (None, ""):
         knobs["mean_radius_m"] = float(v["dm_mm"]) * 5e-4  # dm/2
+    knobs["family"] = "impulse_bucket"
     return knobs
+
+
+def _mm_from_m(v: Any) -> float | None:
+    if v in (None, ""):
+        return None
+    return float(v) * 1e3
+
+
+def design_to_profile_values(design: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a full job JSON, knobs dict, or profile.values into filter ids."""
+    if not isinstance(design, dict):
+        raise ValueError("design must be a JSON object")
+    # Already a profile envelope
+    if isinstance(design.get("values"), dict) and (
+        design.get("format") in (None, "impulsecalc35_profile_v1") or "rts_map" in design
+    ):
+        return dict(design["values"])
+    # Nested geometry job (default_design.json shape)
+    g = design.get("geometry") if isinstance(design.get("geometry"), dict) else {}
+    gas = design.get("gas") if isinstance(design.get("gas"), dict) else {}
+    src = {**design, **g, **gas}
+    # If caller passed knobs/profile flat values already
+    if not g and any(k in design for k in ("hu_mm", "te_mm", "chord_mm", "beta1_deg")):
+        src = design
+    out: dict[str, Any] = {}
+    # size
+    if src.get("chord_m") not in (None, "") or src.get("chord_mm") not in (None, ""):
+        out["chord_mm"] = float(src["chord_mm"]) if src.get("chord_mm") not in (None, "") else float(src["chord_m"]) * 1e3
+    if src.get("mean_radius_m") not in (None, "") or src.get("dm_mm") not in (None, ""):
+        if src.get("dm_mm") not in (None, ""):
+            out["dm_mm"] = float(src["dm_mm"])
+        else:
+            out["dm_mm"] = float(src["mean_radius_m"]) * 2e3
+    z = src.get("n_blades_machine", src.get("Z"))
+    if z not in (None, ""):
+        out["Z"] = int(z)
+    if src.get("solidity") not in (None, ""):
+        out["solidity"] = float(src["solidity"])
+    # metal mm
+    for dst, keys in (
+        ("hu_mm", ("hu_mm", "upper_sagitta_m", "upper_sagitta_mm")),
+        ("hl_mm", ("hl_mm", "lower_sagitta_m", "lower_sagitta_mm")),
+        ("le_mm", ("le_mm", "le_fillet_r_m", "le_fillet_mm")),
+        ("te_mm", ("te_mm", "te_fillet_r_m", "te_fillet_mm")),
+        ("lin_mm", ("lin_mm", "lin_m")),
+        ("lout_mm", ("lout_mm", "lout_m")),
+    ):
+        for k in keys:
+            if src.get(k) not in (None, ""):
+                val = float(src[k])
+                out[dst] = val * 1e3 if k.endswith("_m") and not k.endswith("_mm") else val
+                break
+    # ratios
+    for dst, keys in (
+        ("r_le_ratio", ("r_le_ratio", "le_fillet_r_c", "le_radius_c")),
+        ("r_te_ratio", ("r_te_ratio", "te_fillet_r_c", "te_radius_c")),
+    ):
+        for k in keys:
+            if src.get(k) not in (None, ""):
+                out[dst] = float(src[k])
+                break
+    # angles / gas
+    b1 = src.get("beta1_deg", src.get("beta1_flow_deg", src.get("beta1")))
+    b2 = src.get("beta2_deg", src.get("beta2_flow_deg", src.get("beta2")))
+    if b1 not in (None, ""):
+        out["beta1_deg"] = float(b1)
+    if b2 not in (None, ""):
+        out["beta2_deg"] = float(b2)
+    for dst, keys in (
+        ("W1_m_s", ("W1_m_s", "w1_m_s", "W1", "w1")),
+        ("p1_Pa", ("p1_Pa", "p1_pa", "p1")),
+        ("T1_K", ("T1_K", "t1_k", "T1", "t1")),
+        ("gamma", ("gamma",)),
+    ):
+        for k in keys:
+            if src.get(k) not in (None, ""):
+                out[dst] = float(src[k])
+                break
+    if src.get("pitch_m") not in (None, ""):
+        out["s_mm"] = float(src["pitch_m"]) * 1e3
+    elif src.get("s_mm") not in (None, ""):
+        out["s_mm"] = float(src["s_mm"])
+    return out
+
+
+def merge_design_into_profile(profile: dict[str, Any], design: dict[str, Any]) -> dict[str, Any]:
+    """Write imported design numbers into profile.values (locked source of truth)."""
+    base = dict(profile) if isinstance(profile, dict) else defaults_profile()
+    vals = dict(base.get("values") or {})
+    vals.update(design_to_profile_values(design))
+    base["values"] = vals
+    return sanitize_impulse_betas(base)
 
 
 def apply_constant_passage_to_profile(profile: dict) -> tuple[dict, dict]:

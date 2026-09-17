@@ -45,6 +45,7 @@ LAST_MESH_PNG = PREVIEW_CASE / "mesh_preview.png"
 LAST_PNG = LAST_OUTLINE_PNG
 LAST_JOB = ROOT / APP_OUTPUT / f"{APP_NAME}.json"
 PROFILE_PATH = ROOT / APP_OUTPUT / "ic35_profile.json"
+DESIGN_LOCK_PATH = ROOT / APP_OUTPUT / "ic35_design_lock.json"
 LAST_REPORT = ROOT / APP_OUTPUT / f"{APP_NAME}_report.json"
 PLOT_NAMES = frozenset({"force_history.png", "contour_p.png", "contour_U.png", "contour_stream.png", "contour_M.png", "contour_shock.png", "contour_T.png", "wall_cp_blade0.png", "triangles.png"})
 PLOT_DIRS = (
@@ -98,6 +99,72 @@ def list_field_plots() -> list[dict[str, str]]:
         if resolve_plot(name) is not None:
             out.append({"name": name, "url": f"/plot/{name}"})
     return out
+
+
+
+def _load_design_lock() -> dict[str, Any]:
+    """Persisted immutable design import beside ic35_profile.json."""
+    if not DESIGN_LOCK_PATH.is_file():
+        return {"locked": False, "design": None, "source": None}
+    try:
+        raw = json.loads(DESIGN_LOCK_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"locked": False, "design": None, "source": None, "error": "lock JSON unreadable"}
+    if not isinstance(raw, dict):
+        return {"locked": False, "design": None, "source": None}
+    return {
+        "locked": bool(raw.get("locked")),
+        "design": raw.get("design"),
+        "source": raw.get("source"),
+        "imported_at": raw.get("imported_at"),
+    }
+
+
+def _save_design_lock(payload: dict[str, Any]) -> None:
+    DESIGN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DESIGN_LOCK_PATH.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+
+def _clear_design_lock() -> None:
+    if DESIGN_LOCK_PATH.is_file():
+        DESIGN_LOCK_PATH.unlink()
+
+
+def _load_profile_disk() -> dict[str, Any]:
+    from .rts_filters import defaults_profile, sanitize_impulse_betas
+    if PROFILE_PATH.is_file():
+        try:
+            prof = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            prof = defaults_profile()
+    else:
+        prof = defaults_profile()
+    return sanitize_impulse_betas(prof)
+
+
+def _effective_knobs(post_knobs: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Knobs for outline/mesh: locked design wins over POST/UI."""
+    from .rts_filters import profile_to_ic3_knobs, merge_design_into_profile, design_to_profile_values
+    lock = _load_design_lock()
+    if lock.get("locked") and isinstance(lock.get("design"), dict):
+        prof = merge_design_into_profile(_load_profile_disk(), lock["design"])
+        knobs = profile_to_ic3_knobs(prof)
+        knobs["family"] = "impulse_bucket"
+        # If full job JSON was imported, prefer its geometry block via knobs_to_job merge.
+        d = lock["design"]
+        if isinstance(d.get("geometry"), dict):
+            knobs["geometry"] = dict(d["geometry"])
+            if isinstance(d.get("gas"), dict):
+                knobs.update({k: d["gas"].get(k) for k in d["gas"] if k})
+        return knobs
+    if isinstance(post_knobs, dict) and post_knobs:
+        out = dict(post_knobs)
+        out.setdefault("family", "impulse_bucket")
+        return out
+    knobs = profile_to_ic3_knobs(_load_profile_disk())
+    knobs["family"] = "impulse_bucket"
+    return knobs
+
 
 
 _RUNNING = frozenset({"meshing", "solving"})
@@ -1063,9 +1130,38 @@ class Handler(BaseHTTPRequestHandler):
                 prof = defaults_profile()
             from .rts_filters import sanitize_impulse_betas
             prof = sanitize_impulse_betas(prof)
+            lock = _load_design_lock()
+            if lock.get("locked") and isinstance(lock.get("design"), dict):
+                from .rts_filters import merge_design_into_profile
+                prof = merge_design_into_profile(prof, lock["design"])
             if PROFILE_PATH.is_file():
                 PROFILE_PATH.write_text(json.dumps(prof, indent=2), encoding="utf-8")
-            self._json(200, {"ok": True, "profile": prof, "authority": AUTHORITY_SCOPING, "predicted": True})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "profile": prof,
+                    "locked": bool(lock.get("locked")),
+                    "lock_source": lock.get("source"),
+                    "authority": AUTHORITY_SCOPING,
+                    "predicted": True,
+                },
+            )
+            return
+        if path == "/api/design":
+            lock = _load_design_lock()
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "locked": bool(lock.get("locked")),
+                    "design": lock.get("design") if lock.get("locked") else None,
+                    "source": lock.get("source"),
+                    "imported_at": lock.get("imported_at"),
+                    "authority": AUTHORITY_SCOPING,
+                    "predicted": True,
+                },
+            )
             return
         if path == "/defaults":
             self._json(
@@ -1136,12 +1232,42 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/profile/update":
             from .rts_filters import defaults_profile, profile_to_ic3_knobs
+            from .rts_filters import sanitize_impulse_betas, apply_constant_passage_to_profile, merge_design_into_profile
+            lock = _load_design_lock()
             base = defaults_profile()
             if PROFILE_PATH.is_file():
                 try:
                     base = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
                 except json.JSONDecodeError:
                     pass
+            if lock.get("locked") and isinstance(lock.get("design"), dict):
+                # Immutable import: ignore UI values; refresh profile from locked design.
+                base = merge_design_into_profile(base, lock["design"])
+                base = sanitize_impulse_betas(base)
+                base, cpw_report = apply_constant_passage_to_profile(base)
+                base["format"] = "impulsecalc35_profile_v1"
+                base["authority"] = AUTHORITY_SCOPING
+                base["predicted"] = True
+                PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
+                mapped = profile_to_ic3_knobs(base)
+                mapped["family"] = "impulse_bucket"
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "locked": True,
+                        "lock_source": lock.get("source"),
+                        "note": "Design lock active — Inputs edits ignored. Clear lock to edit.",
+                        "profile": base,
+                        "knobs": mapped,
+                        "constant_passage": cpw_report,
+                        "path": str(PROFILE_PATH),
+                        "authority": AUTHORITY_SCOPING,
+                        "predicted": True,
+                    },
+                )
+                return
             vals = dict(base.get("values") or {})
             incoming = knobs.get("values") if isinstance(knobs.get("values"), dict) else knobs
             if isinstance(incoming, dict):
@@ -1150,7 +1276,6 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     vals[k] = v
             base["values"] = vals
-            from .rts_filters import sanitize_impulse_betas, apply_constant_passage_to_profile
             base = sanitize_impulse_betas(base)
             base, cpw_report = apply_constant_passage_to_profile(base)
             base["format"] = "impulsecalc35_profile_v1"
@@ -1166,10 +1291,64 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "ok": True,
+                    "locked": False,
                     "profile": base,
                     "knobs": mapped,
                     "constant_passage": cpw_report,
                     "path": str(PROFILE_PATH),
+                    "authority": AUTHORITY_SCOPING,
+                    "predicted": True,
+                },
+            )
+            return
+        if path == "/api/design/import":
+            from .rts_filters import defaults_profile, profile_to_ic3_knobs, merge_design_into_profile
+            body = knobs
+            design = body.get("design") if isinstance(body.get("design"), dict) else body
+            if not isinstance(design, dict) or not design:
+                self._json(400, {"ok": False, "error": "design JSON object required", "authority": AUTHORITY_SCOPING})
+                return
+            # Accept {design: {...}, source: "file.json"} or raw job/profile/knobs.
+            source = body.get("source") or body.get("filename") or design.get("name") or "imported.json"
+            lock_payload = {
+                "locked": True,
+                "design": design,
+                "source": str(source),
+                "imported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            _save_design_lock(lock_payload)
+            base = merge_design_into_profile(_load_profile_disk(), design)
+            base["format"] = "impulsecalc35_profile_v1"
+            base["authority"] = AUTHORITY_SCOPING
+            base["predicted"] = True
+            PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
+            mapped = profile_to_ic3_knobs(base)
+            mapped["family"] = "impulse_bucket"
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "locked": True,
+                    "source": lock_payload["source"],
+                    "profile": base,
+                    "knobs": mapped,
+                    "path": str(DESIGN_LOCK_PATH),
+                    "authority": AUTHORITY_SCOPING,
+                    "predicted": True,
+                },
+            )
+            return
+        if path == "/api/design/clear":
+            _clear_design_lock()
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "locked": False,
+                    "design": None,
+                    "source": None,
+                    "note": "Design lock cleared — Inputs editable again.",
                     "authority": AUTHORITY_SCOPING,
                     "predicted": True,
                 },
@@ -1195,7 +1374,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                info = outline_from_knobs(knobs)
+                eff = _effective_knobs(knobs)
+                info = outline_from_knobs(eff)
             except RuntimeError as exc:
                 if "holds this tree" in str(exc):
                     self._json(
@@ -1256,7 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
                     auth = _state["authority"]
                 self._json(409, {"ok": False, "error": f"{ph} running", "authority": auth, "phase": ph})
                 return
-            t = threading.Thread(target=_mesh_worker, args=(knobs,), daemon=True)
+            t = threading.Thread(target=_mesh_worker, args=(_effective_knobs(knobs),), daemon=True)
             t.start()
             self._json(
                 202,
@@ -1305,7 +1485,7 @@ class Handler(BaseHTTPRequestHandler):
                     ph = _state["phase"]
                 self._json(409, {"ok": False, "error": f"{ph} already running", "phase": ph})
                 return
-            t = threading.Thread(target=_solve_worker, args=(knobs,), daemon=True)
+            t = threading.Thread(target=_solve_worker, args=(_effective_knobs(knobs),), daemon=True)
             t.start()
             self._json(
                 202,

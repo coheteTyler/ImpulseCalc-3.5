@@ -38,6 +38,9 @@ main { padding:.7rem .85rem 2rem; overflow:auto; }
 .knob-rts { font:11px ui-monospace,monospace; color:#8a819c; }
 .knob input[type=number] { font:13px ui-monospace,monospace; padding:.28rem .4rem; width:100%; max-width:14rem; background:#0e0c14; color:var(--ink); border:1px solid var(--line); border-radius:6px; }
 #status { font-size:.8rem; color:#b9f0d4; min-height:1.2em; }
+.file-btn { font:13px system-ui; padding:.4rem .75rem; cursor:pointer; border:1px solid var(--line); background:#1c1828; color:var(--ink); border-radius:8px; display:inline-flex; align-items:center; }
+.file-btn:hover { border-color:#8f78ff; }
+.knob input[type=number]:disabled { opacity:.55; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -45,8 +48,13 @@ main { padding:.7rem .85rem 2rem; overflow:auto; }
   <h1>ImpulseCalc 3.5 Inputs</h1>
   <span class="badge">PREDICTED</span>
   <span class="badge">SCOPING</span>
+  <span class="badge" id="lock_badge" style="display:none;border-color:#3d8f6b;color:#b9f0d4;background:#122418">LOCKED</span>
   <div class="actions">
     <span id="status"></span>
+    <label class="file-btn" for="import_json" title="Import design JSON (locks Inputs)">Import JSON
+      <input type="file" id="import_json" accept="application/json,.json" hidden/>
+    </label>
+    <button type="button" id="btn-clear-lock" disabled title="Clear imported design lock">Clear lock</button>
     <button type="button" id="btn-reset">Reset defaults</button>
     <button type="button" class="primary" id="btn-update">Update</button>
   </div>
@@ -81,6 +89,8 @@ let SCHEMA = null;
 let VALUES = {};
 let group = "all";
 let intent = "";
+let designLocked = false;
+let lockSource = null;
 
 async function loadSchema() {
   const r = await fetch("/api/filters/schema");
@@ -91,10 +101,22 @@ async function loadSchema() {
     const p = await fetch("/api/profile");
     if (p.ok) {
       const j = await p.json();
-      if (j && j.values) VALUES = { ...VALUES, ...j.values };
+      const vals = (j.profile && j.profile.values) || j.values || {};
+      if (vals) VALUES = { ...VALUES, ...vals };
+      designLocked = !!j.locked;
+      lockSource = j.lock_source || null;
+    }
+  } catch (_) {}
+  try {
+    const d = await fetch("/api/design");
+    if (d.ok) {
+      const dj = await d.json();
+      designLocked = !!dj.locked;
+      lockSource = dj.source || lockSource;
     }
   } catch (_) {}
   paint();
+  paintLockUI();
 }
 
 function visibleKeys() {
@@ -145,7 +167,12 @@ function paint() {
         inp.title = "Derived — edit chord and size drivers, not σ";
         inp.style.opacity = "0.7";
       }
+      if (designLocked) {
+        inp.disabled = true;
+        inp.title = "LOCKED from " + (lockSource || "imported.json") + " — Clear lock to edit";
+      }
       inp.addEventListener("change", () => {
+        if (designLocked) return;
         const n = Number(inp.value);
         if (!Number.isNaN(n)) VALUES[k.id] = n;
       });
@@ -178,7 +205,44 @@ function readValuesFromDom() {
   }
 }
 
+function paintLockUI() {
+  const badge = $("lock_badge");
+  const clearBtn = $("btn-clear-lock");
+  const upd = $("btn-update");
+  const reset = $("btn-reset");
+  if (designLocked) {
+    badge.style.display = "";
+    badge.textContent = "LOCKED from " + (lockSource || "file.json");
+    clearBtn.disabled = false;
+    upd.disabled = true;
+    upd.title = "Clear lock before Update";
+    reset.disabled = true;
+  } else {
+    badge.style.display = "none";
+    clearBtn.disabled = true;
+    upd.disabled = false;
+    upd.title = "";
+    reset.disabled = false;
+  }
+}
+
+async function rebuildOutline(knobs) {
+  const body = Object.assign({ family: "impulse_bucket" }, knobs || {});
+  const r = await fetch("/outline", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  if (!r.ok || (j.ok === false && j.error)) throw new Error(j.error || ("outline HTTP " + r.status));
+  return j;
+}
+
 async function doUpdate() {
+  if (designLocked) {
+    $("status").textContent = "LOCKED — Clear lock before Update.";
+    return;
+  }
   readValuesFromDom();
   recomputeDerived();
   $("btn-update").disabled = true;
@@ -192,15 +256,81 @@ async function doUpdate() {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-    $("status").textContent = "Profile updated.";
-    // Notify opener (main app) if split-screen popup.
+    if (j.profile && j.profile.values) VALUES = { ...VALUES, ...j.profile.values };
+    designLocked = !!j.locked;
+    lockSource = j.lock_source || lockSource;
+    paint();
+    paintLockUI();
+    $("status").textContent = "Profile updated — rebuilding outline…";
+    const oj = await rebuildOutline(j.knobs);
+    $("status").textContent = oj.noop
+      ? (oj.note || "Profile saved; outline paused (mesh owns tree).")
+      : "Profile + outline updated (TE fillet → te_fillet_r_m).";
     if (window.opener && !window.opener.closed) {
-      window.opener.postMessage({ type: "ic35_profile_updated", profile: j.profile }, "*");
+      window.opener.postMessage({
+        type: "ic35_profile_updated",
+        profile: j.profile,
+        knobs: j.knobs,
+        outline_done: true,
+        locked: designLocked,
+        lock_source: lockSource,
+      }, "*");
     }
   } catch (e) {
     $("status").textContent = String(e.message || e);
   } finally {
-    $("btn-update").disabled = false;
+    paintLockUI();
+  }
+}
+
+async function importDesignFile(file) {
+  $("status").textContent = "Importing " + file.name + "…";
+  const text = await file.text();
+  let design;
+  try { design = JSON.parse(text); }
+  catch (e) { throw new Error("Invalid JSON: " + (e.message || e)); }
+  const r = await fetch("/api/design/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ design, source: file.name }),
+  });
+  const j = await r.json();
+  if (!r.ok || j.ok === false) throw new Error(j.error || ("import HTTP " + r.status));
+  designLocked = true;
+  lockSource = j.source || file.name;
+  if (j.profile && j.profile.values) VALUES = { ...VALUES, ...j.profile.values };
+  paint();
+  paintLockUI();
+  $("status").textContent = "LOCKED from " + lockSource + " — rebuilding outline…";
+  const oj = await rebuildOutline(j.knobs);
+  $("status").textContent = "Imported + locked from " + lockSource + (oj.noop ? " (outline paused)" : "");
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({
+      type: "ic35_design_lock",
+      locked: true,
+      source: lockSource,
+      profile: j.profile,
+      knobs: j.knobs,
+      refresh_outline: true,
+    }, "*");
+  }
+}
+
+async function clearDesignLock() {
+  const r = await fetch("/api/design/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const j = await r.json();
+  if (!r.ok || j.ok === false) throw new Error(j.error || ("clear HTTP " + r.status));
+  designLocked = false;
+  lockSource = null;
+  paint();
+  paintLockUI();
+  $("status").textContent = "Lock cleared — Inputs editable. Update to write profile.";
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({ type: "ic35_design_lock", locked: false, source: null }, "*");
   }
 }
 
@@ -215,9 +345,19 @@ document.querySelectorAll("nav button.tab").forEach(btn => {
 $("intent").addEventListener("change", () => { intent = $("intent").value; paint(); });
 $("btn-update").addEventListener("click", doUpdate);
 $("btn-reset").addEventListener("click", () => {
+  if (designLocked) { $("status").textContent = "LOCKED — Clear lock first."; return; }
   VALUES = { ...(SCHEMA.defaults || {}) };
   paint();
   $("status").textContent = "Defaults restored (not written until Update).";
+});
+$("btn-clear-lock").addEventListener("click", () => {
+  clearDesignLock().catch(e => { $("status").textContent = String(e.message || e); });
+});
+$("import_json").addEventListener("change", (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  ev.target.value = "";
+  if (!f) return;
+  importDesignFile(f).catch(e => { $("status").textContent = String(e.message || e); });
 });
 
 loadSchema().catch(e => { $("status").textContent = String(e); });

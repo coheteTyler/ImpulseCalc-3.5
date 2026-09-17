@@ -47,7 +47,7 @@ header.top h1 span { color: var(--purple2); font-weight: 500; }
 .actions { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-left: auto; }
 #ofnote { font: 11px ui-monospace, monospace; color: var(--muted); max-width: 22rem; }
 .stage {
-  display: grid; grid-template-columns: minmax(16rem, 20rem) minmax(0, 1fr);
+  display: grid; grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr);
   min-height: 0; overflow: hidden;
 }
 @media (max-width: 900px) {
@@ -162,7 +162,6 @@ footer.status .ok { color: var(--ok); }
     <span class="badge scoping" id="badge_auth">SCOPING</span>
     <div class="actions">
       <button type="button" id="btn-inputs">Inputs</button>
-      <button type="button" id="btn-update-profile">Update profile</button>
       <button type="button" class="primary" id="btn-update-outline">Update outline</button>
       <button type="button" id="btn-const-passage" title="Rebuild facing walls concentric (ΔR=g_pass). hl slaved. Use Auto first.">Const. passage</button>
       <button type="button" id="btn-mesh">Run mesh</button>
@@ -175,18 +174,17 @@ footer.status .ok { color: var(--ok); }
     <aside class="rail">
       <div class="cert">
         Engineering aid, <b>not a flight certificate</b>.
-        PREDICTED is not a design load. Cascade from signed 3.5 metal
-        (impulse_bucket dual-arc / Pritchard path) via live <code>/outline</code>.
+        Edit numbers in <b>Inputs</b> only — this rail is status/nav.
       </div>
+      <div class="readout" id="lock_readout" style="display:none"></div>
       <div class="readout" id="profile_readout">Central profile: loading…</div>
       <div class="readout" id="results_readout">No solve yet — Run mesh / Run solve. Numbers land here from /status.</div>
-      <div class="tabs" id="group_tabs">
-        <button type="button" class="active" data-group="metal">Metal</button>
-        <button type="button" data-group="size">Size</button>
-        <button type="button" data-group="inlet_gas">Inlet</button>
+      <p class="hint" id="group_hint">No editable design numbers here. Open <b>Inputs</b> to change metal / size / gas, then Update.</p>
+      <div class="tabs" id="rail_view_tabs" role="tablist" style="margin-top:.5rem">
+        <button type="button" class="active" data-view="outline">Outline</button>
+        <button type="button" data-view="mesh">Mesh</button>
+        <button type="button" data-view="fields">Fields</button>
       </div>
-      <p class="hint" id="group_hint">Number fields only — no packing slider rail. Full RTS filters via Inputs.</p>
-      <div class="fields" id="fields"></div>
     </aside>
 
     <section class="main">
@@ -255,7 +253,7 @@ footer.status .ok { color: var(--ok); }
 
   function setView(mode) {
     viewMode = mode === "mesh" || mode === "fields" ? mode : "outline";
-    document.querySelectorAll("#view_tabs button").forEach((b) => {
+    document.querySelectorAll("#view_tabs button, #rail_view_tabs button").forEach((b) => {
       const on = b.dataset.view === viewMode;
       b.classList.toggle("active", on);
       b.setAttribute("aria-selected", on ? "true" : "false");
@@ -385,92 +383,35 @@ footer.status .ok { color: var(--ok); }
     });
   }
 
-  function paintFields() {
-    const gmeta = (SCHEMA.groups || {})[group];
-    $("group_hint").textContent = gmeta && gmeta.hint
-      ? gmeta.hint + " Number fields only — no s/σ/c/r packing slider rail."
-      : "Number fields only — no packing slider rail. Full RTS filters via Inputs.";
-    const box = $("fields");
-    box.innerHTML = "";
-    const bySg = new Map();
-    for (const k of visibleKeys()) {
-      const sg = k.subgroup || "keys";
-      if (!bySg.has(sg)) bySg.set(sg, []);
-      bySg.get(sg).push(k);
-    }
-    for (const [sg, keys] of bySg) {
-      const cap = document.createElement("p");
-      cap.className = "hint";
-      cap.style.marginTop = ".35rem";
-      cap.textContent = String(sg).replace(/_/g, " ");
-      box.appendChild(cap);
-      for (const k of keys) {
-        const d = document.createElement("div");
-        d.className = "knob " + (k.css || "");
-        d.innerHTML =
-          `<div class="knob-head"><span class="knob-label">${k.label}</span>` +
-          `<span class="knob-sym">${k.sym || ""}</span>` +
-          `<span class="knob-unit">${k.unit || ""}</span></div>` +
-          `<div class="knob-rts">RTS ${k.rts || "—"}</div>`;
-        if (k.id === "constant_passage_width") {
-          const inp = document.createElement("input");
-          inp.type = "checkbox";
-          inp.checked = !!(VALUES[k.id] === true || VALUES[k.id] === 1 || VALUES[k.id] === "true");
-          inp.addEventListener("change", () => {
-            VALUES[k.id] = !!inp.checked;
-            constantPassage = !!inp.checked;
-            refreshConstPassageBtn();
-          });
-          d.appendChild(inp);
-          box.appendChild(d);
-          continue;
-        }
-        const inp = document.createElement("input");
-        inp.type = "number";
-        inp.id = "f_" + k.id;
-        inp.step = "any";
-        inp.value = VALUES[k.id] ?? k.default ?? "";
-        inp.addEventListener("change", () => {
-          const n = Number(inp.value);
-          if (!Number.isNaN(n)) VALUES[k.id] = n;
-          paintReadout();
-        });
-        if (k.id === "passage_depth_mm") {
-          const row = document.createElement("div");
-          row.style.display = "flex";
-          row.style.gap = "0.35rem";
-          row.style.alignItems = "center";
-          inp.style.flex = "1";
-          const autoBtn = document.createElement("button");
-          autoBtn.type = "button";
-          autoBtn.id = "btn-passage-auto";
-          autoBtn.textContent = "Auto";
-          autoBtn.title = "Min dist from fillet-metal foot (or tip) to blade below";
-          autoBtn.style.flex = "0 0 auto";
-          autoBtn.addEventListener("click", () => { autoPassageDepth(); });
-          row.appendChild(inp);
-          row.appendChild(autoBtn);
-          d.appendChild(row);
-          box.appendChild(d);
-          continue;
-        }
-        d.appendChild(inp);
-        box.appendChild(d);
-      }
-    }
-    if (!box.children.length) {
-      box.innerHTML = "<p class=\"hint\">No knobs in this group.</p>";
+  let designLocked = false;
+  let lockSource = null;
+
+  function paintLockBadge() {
+    const el = $("lock_readout");
+    if (!el) return;
+    if (designLocked) {
+      el.style.display = "";
+      el.textContent = "LOCKED from " + (lockSource || "imported.json") + "\nInputs read-only until Clear lock.";
+      el.style.borderColor = "var(--ok)";
+    } else {
+      el.style.display = "none";
+      el.textContent = "";
     }
   }
 
-  function readValuesFromDom() {
-    for (const k of (SCHEMA.keys || [])) {
-      if (PACK_SLIDER_IDS.has(k.id)) continue;
-      const el = document.getElementById("f_" + k.id);
-      if (!el) continue;
-      const n = Number(el.value);
-      if (!Number.isNaN(n)) VALUES[k.id] = n;
+  function paintFields() {
+    // Left rail no longer paints editable knobs — Inputs owns number edits.
+    const hint = $("group_hint");
+    if (hint) {
+      hint.textContent = designLocked
+        ? "Design lock active — Clear lock in Inputs to edit numbers."
+        : "No editable design numbers here. Open Inputs to change metal / size / gas, then Update.";
     }
+    paintLockBadge();
+  }
+
+  function readValuesFromDom() {
+    // Intentionally empty: number edits live in Inputs (filters.html), not this rail.
   }
 
   function fmt(x, dig) {
@@ -556,7 +497,6 @@ footer.status .ok { color: var(--ok); }
 
   function setBusy(b) {
     inFlight = !!b;
-    $("btn-update-profile").disabled = inFlight;
     $("btn-update-outline").disabled = inFlight;
     $("btn-mesh").disabled = inFlight;
     $("btn-solve").disabled = inFlight || !ofPresent;
@@ -619,7 +559,17 @@ footer.status .ok { color: var(--ok); }
         const j = await p.json();
         const vals = (j.profile && j.profile.values) || j.values || {};
         VALUES = { ...VALUES, ...vals };
+        designLocked = !!j.locked;
+        lockSource = j.lock_source || null;
         applyAuth(j);
+      }
+    } catch (_) {}
+    try {
+      const d = await fetch("/api/design");
+      if (d.ok) {
+        const dj = await d.json();
+        designLocked = !!dj.locked;
+        lockSource = dj.source || lockSource;
       }
     } catch (_) {}
     constantPassage = !!(VALUES.constant_passage_width === true || VALUES.constant_passage_width === 1 || VALUES.constant_passage_width === "true");
@@ -689,6 +639,51 @@ footer.status .ok { color: var(--ok); }
     paintResults(j);
     if (viewMode === "mesh") paintMeshMeta(lastMeshStatus);
     if (viewMode === "fields") paintFieldsView();
+  }
+
+  async function updateOutlineFromServerKnobs(knobs) {
+    const id = ++outlineSeq;
+    setBusy(true);
+    setStatus("Updating outline from central profile metal…");
+    try {
+      let body = knobs;
+      if (!body || typeof body !== "object") {
+        // Pull knobs from profile/update without reading rail fields.
+        const uj = await persistProfile();
+        body = Object.assign({ family: "impulse_bucket" }, uj.knobs || {});
+      } else {
+        body = Object.assign({ family: "impulse_bucket" }, body);
+      }
+      lastKnobs = body;
+      const r = await fetch("/outline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (id !== outlineSeq) return;
+      applyAuth(j);
+      if (!j.ok && j.ok !== undefined && j.error) throw new Error(j.error);
+      setView("outline");
+      bumpOutlineImg();
+      bumpMeshImg();
+      const gap = quietGapLine(j);
+      const meta = [];
+      if (j.family) meta.push(String(j.family));
+      if (j.mesh_kind) meta.push(String(j.mesh_kind));
+      if (j.chord_m != null) meta.push("c=" + (Number(j.chord_m) * 1e3).toFixed(2) + " mm");
+      $("plot_meta").dataset.locked = "1";
+      $("plot_meta").textContent = meta.length ? meta.join(" · ") : "POST /outline → GET /outline.png";
+      if (j.noop) setStatus(j.note || "outline paused — mesh/solve owns tree", "");
+      else if (gap && /≤ 0|intersecting/i.test(gap)) setStatus(gap, "warn");
+      else setStatus(gap || "outline refreshed (SCOPING / PREDICTED)", gap ? "ok" : "");
+    } catch (e) {
+      if (id !== outlineSeq) return;
+      setStatus(String(e.message || e), "warn");
+    } finally {
+      if (id === outlineSeq) setBusy(false);
+      refreshSolveGate();
+    }
   }
 
   async function updateOutline() {
@@ -822,21 +817,11 @@ footer.status .ok { color: var(--ok); }
     }
   }
 
-  document.querySelectorAll("#group_tabs button").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll("#group_tabs button").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      group = btn.dataset.group;
-      paintFields();
-    });
-  });
-
-  document.querySelectorAll("#view_tabs button").forEach((btn) => {
+  document.querySelectorAll("#view_tabs button, #rail_view_tabs button").forEach((btn) => {
     btn.addEventListener("click", () => { setView(btn.dataset.view); });
   });
 
   $("btn-inputs").addEventListener("click", openInputs);
-  $("btn-update-profile").addEventListener("click", () => { updateProfileOnly(); });
   $("btn-update-outline").addEventListener("click", () => { updateOutline(); });
   $("btn-const-passage").addEventListener("click", async () => {
     constantPassage = !constantPassage;
@@ -870,13 +855,40 @@ footer.status .ok { color: var(--ok); }
   });
 
   window.addEventListener("message", async (ev) => {
-    if (!ev.data || ev.data.type !== "ic35_profile_updated") return;
+    if (!ev.data) return;
+    if (ev.data.type === "ic35_design_lock") {
+      designLocked = !!ev.data.locked;
+      lockSource = ev.data.source || null;
+      if (ev.data.profile && ev.data.profile.values) {
+        VALUES = { ...VALUES, ...ev.data.profile.values };
+      }
+      paintFields();
+      paintReadout();
+      if (ev.data.refresh_outline) {
+        try { await updateOutlineFromServerKnobs(ev.data.knobs); } catch (e) {
+          setStatus(String(e.message || e), "warn");
+        }
+      }
+      return;
+    }
+    if (ev.data.type !== "ic35_profile_updated") return;
     try {
       const vals = (ev.data.profile && ev.data.profile.values) || {};
       VALUES = { ...VALUES, ...vals };
+      if (ev.data.locked != null) designLocked = !!ev.data.locked;
+      if (ev.data.lock_source) lockSource = ev.data.lock_source;
       paintFields();
       paintReadout();
-      await updateOutline();
+      // Prefer knobs returned by Inputs Update — do not re-POST stale rail values.
+      if (ev.data.knobs) {
+        await updateOutlineFromServerKnobs(ev.data.knobs);
+      } else if (ev.data.outline_done) {
+        setView("outline");
+        bumpOutlineImg();
+        setStatus("outline refreshed from Inputs", "ok");
+      } else {
+        await updateOutlineFromServerKnobs(null);
+      }
     } catch (e) {
       setStatus(String(e.message || e), "warn");
     }
