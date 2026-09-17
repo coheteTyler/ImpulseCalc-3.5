@@ -133,6 +133,109 @@ def dump_xs_1c(
 
 
 
+def _join_polylines(*arrs: np.ndarray, eps: float = 1e-9) -> np.ndarray:
+    """Concatenate open polylines (N,2), dropping shared endpoints."""
+    chunks: list[np.ndarray] = []
+    for a in arrs:
+        a = np.asarray(a, dtype=float)
+        if a.size == 0:
+            continue
+        if a.ndim != 2 or a.shape[1] != 2:
+            a = a.reshape(-1, 2)
+        if not chunks:
+            chunks.append(a)
+            continue
+        if float(np.linalg.norm(a[0] - chunks[-1][-1])) <= eps:
+            chunks.append(a[1:])
+        else:
+            chunks.append(a)
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 2), dtype=float)
+
+
+def _dump_block_from_west(
+    west: np.ndarray,
+    xs_dump: np.ndarray,
+    x_out: float | None = None,
+) -> np.ndarray:
+    """Dump H: curved west edge → x_out with dump_xs fractional packing (no TE cliff).
+
+    pts shape (n_x+1, n_y, 2). Each ray keeps constant y; axial nodes follow
+    dump_xs fractions mapped onto [x_west, x_out].
+    """
+    west = np.asarray(west, dtype=float).reshape(-1, 2)
+    xs_dump = np.asarray(xs_dump, dtype=float).reshape(-1)
+    if west.shape[0] < 2 or xs_dump.shape[0] < 2:
+        raise RuntimeError("dump west / xs_dump too short")
+    x_te = float(xs_dump[0])
+    x_hi = float(xs_dump[-1] if x_out is None else x_out)
+    span0 = max(x_hi - x_te, 1e-15)
+    frac = (xs_dump - x_te) / span0
+    ni = int(xs_dump.shape[0] - 1)
+    nj = int(west.shape[0])
+    pts = np.zeros((ni + 1, nj, 2), dtype=float)
+    for j in range(nj):
+        x0 = float(west[j, 0])
+        y0 = float(west[j, 1])
+        xs_j = x0 + frac * (x_hi - x0)
+        xs_j[0] = x0
+        xs_j[-1] = x_hi
+        pts[:, j, 0] = xs_j
+        pts[:, j, 1] = y0
+    return pts
+
+
+def te_plane_fence_hit(
+    h_blocks: list[np.ndarray],
+    *,
+    x_te: float,
+    chord: float,
+    y_bot: float,
+    y_top: float,
+    tol_c: float = 0.02,
+    span_frac: float = 0.90,
+) -> bool:
+    """True if a near-vertical full-pitch column sits within tol_c*c of x_TE.
+
+    Detects the old O→Cartesian dump join (AABB east wall) that can fake Δp.
+    """
+    c = max(float(chord), 1e-9)
+    tol = float(tol_c) * c
+    pitch = float(y_top) - float(y_bot)
+    if pitch <= 1e-12:
+        return False
+    # Collect nearly-vertical interior edges near x_TE (axis-aligned fence).
+    y_hits: list[tuple[float, float]] = []
+    for hb in h_blocks:
+        p = np.asarray(hb, dtype=float)
+        if p.ndim != 3 or p.shape[0] < 2 or p.shape[1] < 2:
+            continue
+        # i-const columns: edges between j and j+1
+        for i in range(p.shape[0]):
+            col = p[i]
+            xs = col[:, 0]
+            ys = col[:, 1]
+            if float(np.max(xs) - np.min(xs)) > tol:
+                continue
+            xmid = float(np.mean(xs))
+            if abs(xmid - float(x_te)) > tol:
+                continue
+            y_hits.append((float(np.min(ys)), float(np.max(ys))))
+        # Also check single i-faces that are vertical between neighboring i at fixed j
+        # (cartesian dump west): look at first i-column span
+    if not y_hits:
+        return False
+    # Merge y intervals at this TE plane
+    y_hits.sort()
+    merged: list[list[float]] = []
+    for lo, hi in y_hits:
+        if not merged or lo > merged[-1][1] + 1e-9:
+            merged.append([lo, hi])
+        else:
+            merged[-1][1] = max(merged[-1][1], hi)
+    span = sum(hi - lo for lo, hi in merged)
+    return span >= float(span_frac) * pitch
+
+
 def _chain_arclength(chain: list[tuple[float, float]]) -> tuple[list[float], float]:
     s = [0.0]
     for i in range(1, len(chain)):
@@ -1665,27 +1768,52 @@ def build_offset_oh(
         f"inlet H axial pack toward LE (inlet_stretch={r_inlet:.3g}→{r_in:.3g}, n_inlet={n_in}); "
         "Δx smaller near LE join than at x_in"
     )
-    x_cart = min(x_out - 1e-6, max(float(outer_hi[:, 0].max()), float(pSE[0]), x_join_e) + 2e-4)
-    xs_e = np.linspace(x_join_e, x_cart, n_out + 1)
+    # TE collar x — dump starts here (open-O outer / east stem), NOT a full-pitch
+    # vertical AABB east wall at x_TE (that hard O→Cartesian cliff fakes Δp).
+    xs_poly = [p[0] for p in poly0]
+    c_use = max(max(xs_poly) - min(xs_poly), 1e-6) if xs_poly else max(float(x_out) - float(x_in), 1e-6)
+    x_te_col = max(
+        float(outer[:, 0].max()),
+        float(outer_hi[:, 0].max()),
+        float(pSE[0]),
+        float(pNE[0]),
+        float(te_o[0]),
+    )
+    fc = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
+    dx_near = min(max(fc, 1e-8), 0.05 * c_use)
     if dump_xs is not None:
         xs_dump = np.asarray(dump_xs, dtype=float).copy()
-        xs_dump = xs_dump - float(xs_dump[0]) + float(x_cart)
+        xs_dump = xs_dump - float(xs_dump[0]) + float(x_te_col)
+        if float(xs_dump[-1]) < float(x_te_col) + 1.0 * c_use - 1e-12:
+            xs_dump = dump_xs_1c(
+                x_te_col, c_use, dx_near, n_near=10, stretch_max=1.25, L_dump_c=1.0
+            )
         notes.append(
-            f"dump xs override n={len(xs_dump)-1} L={(xs_dump[-1]-xs_dump[0])*1e3:.2f} mm "
-            f"last_Δx={(xs_dump[-1]-xs_dump[-2])*1e3:.3f} mm"
+            f"dump xs from TE collar n={len(xs_dump)-1} L={(xs_dump[-1]-xs_dump[0])*1e3:.2f} mm "
+            f"first_Δx={(xs_dump[1]-xs_dump[0])*1e3:.4f} mm last_Δx={(xs_dump[-1]-xs_dump[-2])*1e3:.3f} mm"
         )
         x_out = float(xs_dump[-1])
-    elif dump_rx is not None and float(dump_rx) > 1.0 + 1e-12 and n_out_x >= 2:
-        L = max(float(x_out) - float(x_cart), 1e-6)
-        r = float(dump_rx)
-        xs_dump = np.array(
-            [x_cart + L * _stretch(j, n_out_x, r) for j in range(n_out_x + 1)], dtype=float
-        )
-        notes.append(
-            f"dump geometric rx={r:.3g} n={n_out_x} last_Δx={(xs_dump[-1]-xs_dump[-2])*1e3:.3f} mm"
-        )
     else:
-        xs_dump = np.linspace(x_cart, x_out, n_out_x + 1)
+        # Prefer dump_xs_1c packing (0.4c cluster, stretch≤1.25, ≥1.0c) over TE cliff.
+        L_c = max(1.0, (float(x_out) - float(x_te_col)) / c_use)
+        xs_dump = dump_xs_1c(
+            x_te_col, c_use, dx_near, n_near=10, stretch_max=1.25, L_dump_c=L_c
+        )
+        # Optional dump_rx only lengthens / retargets last cell if caller asked.
+        if dump_rx is not None and float(dump_rx) > 1.0 + 1e-12 and int(n_out_x) >= 2:
+            # Keep dump_xs_1c near-TE; if shorter than requested x_out, rebuild with L_c.
+            if float(x_out) > float(xs_dump[-1]) + 1e-9:
+                L_c = max(1.0, (float(x_out) - float(x_te_col)) / c_use)
+                xs_dump = dump_xs_1c(
+                    x_te_col, c_use, dx_near, n_near=10, stretch_max=min(1.25, float(dump_rx)),
+                    L_dump_c=L_c,
+                )
+        x_out = float(xs_dump[-1])
+        notes.append(
+            f"DUMP 1.0c from TE collar: x_TE_col={x_te_col:.6g} x_out={x_out:.6g} "
+            f"n_dump={len(xs_dump)-1} L/c={(x_out-x_te_col)/c_use:.3g} "
+            f"first_Δx={(xs_dump[1]-xs_dump[0]):.3e} (no TE-plane AABB east wall)"
+        )
 
     y_sw = float(pSW[1])
     y_se = float(pSE[1])
@@ -1697,13 +1825,6 @@ def build_offset_oh(
             x_in, west_s2n[:, 0], west_s2n[:, 1], n_in, pack_r=r_in, dense_at="hi"
         ),
         "west",
-        keep_edges=True,
-    )
-    h_east = _pos_block(
-        _ray_block_horizontal(
-            east_s2n[:, 0], x_cart, east_s2n[:, 1], n_out, pack_r=1.0, dense_at="lo"
-        ),
-        "east",
         keep_edges=True,
     )
     h_south = _pos_block(
@@ -1730,8 +1851,6 @@ def build_offset_oh(
 
     west_s = h_west[:, 0, :]
     west_n = h_west[:, -1, :]
-    east_s = h_east[:, 0, :]
-    east_n = h_east[:, -1, :]
     south_w = h_south[0, :, :]
     south_e = h_south[-1, :, :]
     north_w = h_north[0, :, :]
@@ -1747,16 +1866,6 @@ def build_offset_oh(
         "sw",
         keep_edges=True,
     )
-    h_se = _pos_block(
-        tfi_block(
-            np.column_stack([east_s[:, 0], np.full(east_s.shape[0], y_bot)]),
-            east_s,
-            south_e,
-            np.column_stack([np.full(south_e.shape[0], x_cart), south_e[:, 1]]),
-        ),
-        "se",
-        keep_edges=True,
-    )
     nw_north = np.column_stack([west_s[:, 0], np.full(west_s.shape[0], y_top)])
     nw_east = _lin(west_n[-1], nw_north[-1], north_w.shape[0] - 1)
     nw_west = _lin(west_n[0], nw_north[0], north_w.shape[0] - 1)
@@ -1765,34 +1874,33 @@ def build_offset_oh(
     if min_cell_area_2d_rect(sm) > 0:
         h_nw_raw = sm
     h_nw = _pos_block(h_nw_raw, "nw", keep_edges=True)
-    ne_north = np.column_stack([east_s[:, 0], np.full(east_s.shape[0], y_top)])
-    ne_west = _lin(east_n[0], ne_north[0], north_e.shape[0] - 1)
-    ne_east = _lin(east_n[-1], ne_north[-1], north_e.shape[0] - 1)
-    h_ne_raw = tfi_block(east_n, ne_north, ne_west, ne_east)
-    sm = smooth_rect_block(h_ne_raw, n_iter=80, omega=0.45)
-    if min_cell_area_2d_rect(sm) > 0:
-        h_ne_raw = sm
-    h_ne = _pos_block(h_ne_raw, "ne", keep_edges=True)
 
-    ys_dump = _join_xs(h_se[-1, :, 1], h_east[-1, :, 1], h_ne[-1, :, 1])
-    h_dump = _pos_block(cartesian_block_xy(xs_dump, ys_dump), "dump")
+    # Dump west = south H east + O east stem + north H east (collar silhouette).
+    # Removes h_east→x_cart AABB cliff. dump_xs_1c packing from TE collar.
+    # (Full-pitch dump-west can still look bright on preview when stem≈vertical.)
+    south_e = south_e.copy()
+    north_e = north_e.copy()
+    south_e[-1] = east_s2n[0]
+    north_e[0] = east_s2n[-1]
+    west_dump = _join_polylines(south_e, east_s2n, north_e)
+    h_dump = _pos_block(_dump_block_from_west(west_dump, xs_dump, x_out), "dump", keep_edges=True)
     snap = [(te_w_old, te_w), (te_o_old, te_o)]
     h_rest = [
         _snap_points(hb, snap)
-        for hb in [
-            h_west, h_east, h_south, h_north,
-            h_sw, h_se, h_nw, h_ne, h_dump,
-        ]
+        for hb in [h_west, h_south, h_north, h_sw, h_nw, h_dump]
     ]
     h_blocks = [h_te_wake, *h_rest]
     notes.append(
-        "H-blocks: vertical rays cavity+south and back→y_top; horizontal rays on steep stems. "
-        "No cavity TFI (inner 22/78 was the 89° collinear-corner hole). "
-        "No west_up/east_up horizontal TFI of the shoulders."
+        "H-blocks: vertical rays cavity+south and back→y_top; inlet stems horizontal; "
+        "dump from TE collar silhouette (open-O east stem) with dump_xs_1c packing. "
+        "No h_east→x_cart AABB east wall / Cartesian cliff at TE."
     )
     notes.append("H TE nodes snapped to wake chord (unkinked).")
     notes.append("Cyclic x-nodes are shared top/bottom so 3-pitch stacking is conformal.")
     notes.append("NOT subsetMesh stairs. NOT AABB morph across the cavity. NOT Gmsh.")
+    notes.append(
+        f"TE collar dump: x_TE_col={x_te_col:.6g} x_out={float(x_out):.6g} n_dump={len(xs_dump)-1}"
+    )
     return ogrid, h_blocks, a2, notes
 
 
@@ -2745,23 +2853,15 @@ def build_body_fitted_oh_shock(
     rx = max(float(dump_rx), 1.0 + 1e-9)
     dx_last = max(float(dump_dx_last), 1e-6)
     x_te = max(p[0] for p in poly0)
-    x_cart_est = x_te + 2e-4
+    # dump_xs_1c from TE (no Cartesian cliff at x_TE+0.2 mm). Length ≥ max(1c, wake_cx*c).
     dx0 = max(20e-6, 0.0015 * c)
-    n_wake = max(16, int(float(wake_cx) * c / max(dx0, 1e-6) / 2))
-    r_w = min(max(r_wall, 1.05), 1.12)
-    xs_w = np.array(
-        [x_cart_est + float(wake_cx) * c * _stretch(j, n_wake, r_w) for j in range(n_wake + 1)],
-        dtype=float,
+    L_c = max(1.0, float(wake_cx), (float(x_out) - float(x_te)) / c)
+    xs_full = dump_xs_1c(
+        float(x_te), c, dx0, n_near=10, stretch_max=min(1.25, float(rx)), L_dump_c=L_c
     )
-    dx0_w = min(float(xs_w[-1] - xs_w[-2]), dx_last)
-    xs_tail, L_tail, n_tail = dump_xs_rx(
-        float(xs_w[-1]), rx=rx, dx_last=dx_last, dx0=max(dx0_w * 0.9, dx0), n_min=6, n_max=40
-    )
-    xs_full = np.concatenate([xs_w[:-1], xs_tail])
-    if abs(float(xs_full[-1] - xs_full[-2]) - dx_last) / dx_last > 0.35:
-        xs_full, _, _ = dump_xs_rx(x_cart_est, rx=rx, dx_last=dx_last, dx0=dx0, n_min=20, n_max=60)
-        while float(xs_full[-1] - xs_full[0]) < float(wake_cx) * c + 0.008:
-            xs_full = np.append(xs_full, float(xs_full[-1]) + dx_last)
+    # Optionally nudge outlet so last Δx is not far below dump_dx_last (still no TE cliff).
+    if float(xs_full[-1] - xs_full[-2]) < 0.65 * dx_last:
+        xs_full = np.append(xs_full, float(xs_full[-1]) + dx_last)
     n_dump = int(len(xs_full) - 1)
     ogrid, h_blocks, a2, oh_notes = build_offset_oh(
         poly0,

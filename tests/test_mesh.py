@@ -78,3 +78,31 @@ def test_face_classification_leftover_zero_tiny(tmp_path: Path):
     assert mesh.patches["blade0"] > 0
     assert "blade1" not in mesh.patches
     # leftover would have raised in write_polymesh
+
+
+def test_dump_xs_1c_packing_and_no_te_fence_helpers():
+    import numpy as np
+    from impulsecalc3.mesh import dump_xs_1c, te_plane_fence_hit, _dump_block_from_west
+
+    x_te, c, dx = 0.01, 0.01, 2e-4
+    xs = dump_xs_1c(x_te, c, dx, n_near=10, stretch_max=1.25, L_dump_c=1.0)
+    assert abs(xs[0] - x_te) < 1e-15
+    assert xs[-1] >= x_te + 1.0 * c - 1e-12
+    assert (xs[1] - xs[0]) > 0
+    # first 0.4c clustered: more nodes in near band than a uniform 1c split would put there
+    n_near = int(np.sum(xs <= x_te + 0.4 * c + 1e-12)) - 1
+    assert 8 <= n_near <= 12
+    # curved west dump is not a vertical fence
+    west = np.column_stack([np.linspace(x_te - 0.001, x_te, 20), np.linspace(-0.004, 0.004, 20)])
+    dump = _dump_block_from_west(west, xs)
+    assert dump.shape[0] == len(xs)
+    # synthetic full-pitch vertical column → fence hit
+    ys = np.linspace(-0.004, 0.004, 30)
+    cliff = np.zeros((2, len(ys), 2))
+    cliff[0, :, 0] = x_te
+    cliff[0, :, 1] = ys
+    cliff[1, :, 0] = x_te + 0.002
+    cliff[1, :, 1] = ys
+    assert te_plane_fence_hit([cliff], x_te=x_te, chord=c, y_bot=-0.004, y_top=0.004)
+    # curved dump should not trip the fence
+    assert not te_plane_fence_hit([dump], x_te=x_te, chord=c, y_bot=-0.004, y_top=0.004)
