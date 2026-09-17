@@ -78,6 +78,61 @@ def _xs_pack_hi(x_lo: float, x_hi: float, n: int, r: float) -> np.ndarray:
     )
 
 
+
+def dump_xs_1c(
+    x_te: float,
+    chord: float,
+    dx_near: float,
+    *,
+    n_near: int = 10,
+    stretch_max: float = 1.25,
+    L_dump_c: float = 1.0,
+    L_near_c: float = 0.4,
+) -> np.ndarray:
+    """Dump x-nodes: TE → ≥1.0c. First 0.4c ~8–12 cells at Δx≈TE wall; then stretch ≤1.25.
+
+    No hard Cartesian jump at TE — first Δx matches wall spacing, then grows.
+    """
+    c = max(float(chord), 1e-9)
+    x_te = float(x_te)
+    x_out = x_te + max(float(L_dump_c), 1.0) * c
+    L_near = float(L_near_c) * c
+    x_near = x_te + L_near
+    dx = max(float(dx_near), 1e-8)
+    n_near = int(max(8, min(12, int(n_near))))
+    # Uniform-ish first band; nudge n so Δx ≈ dx_near without refining to LE spacing.
+    n_guess = max(8, min(12, int(round(L_near / dx))))
+    n_near = int(max(8, min(12, n_guess)))
+    xs_near = np.linspace(x_te, x_near, n_near + 1)
+    # Far band: geometric stretch from last near Δx, ratio ≤ stretch_max
+    L_far = x_out - x_near
+    dx0 = float(xs_near[-1] - xs_near[-2]) if n_near >= 1 else dx
+    r = min(float(stretch_max), 1.25)
+    if L_far <= 1.5 * dx0:
+        xs_far = np.array([x_near, x_out], dtype=float)
+    else:
+        # Find n_far such that sum dx0*r^k covers L_far with r≤1.25
+        n_far = 2
+        for n in range(2, 80):
+            if abs(r - 1.0) < 1e-12:
+                L = n * dx0
+            else:
+                L = dx0 * (r**n - 1.0) / (r - 1.0)
+            n_far = n
+            if L >= L_far * 0.98:
+                break
+        # Rebuild exactly onto [x_near, x_out] with that n and capped r
+        xs_far = np.array(
+            [x_near + L_far * _stretch(j, n_far, r) for j in range(n_far + 1)],
+            dtype=float,
+        )
+    xs = np.concatenate([xs_near[:-1], xs_far])
+    xs[0] = x_te
+    xs[-1] = x_out
+    return xs
+
+
+
 def _chain_arclength(chain: list[tuple[float, float]]) -> tuple[list[float], float]:
     s = [0.0]
     for i in range(1, len(chain)):
@@ -1859,6 +1914,8 @@ def build_cassette_oh(
     stretch: float,
     d_o: float,
     g_min: float,
+    chord_m: float | None = None,
+    dump_xs: np.ndarray | None = None,
 ) -> dict:
     """Three physical C's in one polyMesh. Fluid outside every C. No cyclic. No Gmsh."""
     notes: list[str] = []
@@ -1891,6 +1948,24 @@ def build_cassette_oh(
     lid = max(0.5 * d_use, 0.0005)
     y_bot = all_y0 - lid
     y_top = all_y1 + lid
+    # DUMP 1.0c: x_out >= x_TE + chord; first 0.4c clustered; stretch <= 1.25.
+    x_te = max(max(p[0] for p in bp) for bp in blades)
+    c_use = float(chord_m) if chord_m not in (None, "") else max(x_te - min(min(p[0] for p in bp) for bp in blades), 1e-6)
+    x_out = max(float(x_out), float(x_te) + 1.0 * c_use)
+    if dump_xs is not None:
+        _dump_xs = np.asarray(dump_xs, dtype=float).copy()
+        _dump_xs = _dump_xs - float(_dump_xs[0]) + float(x_te)
+        _dump_xs[-1] = x_out
+    else:
+        # TE wall Δx ≈ first O radial cell (d_o growth), not LE far spacing.
+        dx_te = max(float(d_use) * (float(stretch) - 1.0) / max(float(stretch) ** max(int(n_rad), 1) - 1.0, 1e-12), 1e-7)
+        dx_te = min(dx_te, 0.05 * c_use)
+        _dump_xs = dump_xs_1c(x_te, c_use, dx_te, n_near=10, stretch_max=1.25, L_dump_c=1.0)
+        x_out = float(_dump_xs[-1])
+    notes.append(
+        f"DUMP 1.0c: x_TE={x_te:.6g} x_out={x_out:.6g} n_dump={len(_dump_xs)-1} "
+        f"L_dump/c={(x_out-x_te)/c_use:.3g} first_Δx={(_dump_xs[1]-_dump_xs[0]):.3e}"
+    )
     h_blocks: list[np.ndarray] = []
     n_st = max(n_cyc, 24)
     n_span = max(n_fill, 8)
@@ -1907,8 +1982,11 @@ def build_cassette_oh(
         west_in = _lin(s_head[0], n_head[0], n_span)
         east_in = _lin(s0[0], n0[0], n_span)
         h_blocks.append(_pos_block(tfi_block(s_head, n_head, west_in, east_in), f"in{k}"))
-        s_tail = _lin(s0[-1], (x_out, float(s0[-1, 1])), n_out_x)
-        n_tail = _lin(n0[-1], (x_out, float(n0[-1, 1])), n_out_x)
+        # Dump: sample along dump_xs (TE+1c clustered); hold TE y — no Cartesian jump.
+        ys_s = float(s0[-1, 1])
+        ys_n = float(n0[-1, 1])
+        s_tail = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], ys_s)])
+        n_tail = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], ys_n)])
         west_out = _lin(s0[-1], n0[-1], n_span)
         east_out = _lin(s_tail[-1], n_tail[-1], n_span)
         h_blocks.append(_pos_block(tfi_block(s_tail, n_tail, west_out, east_out), f"out{k}"))
@@ -1981,6 +2059,10 @@ def build_cassette_oh(
         "notes": notes,
         "aabbs": aabbs,
         "n_i": int(ogrids[0].shape[0]),
+        "x_te": float(x_te),
+        "x_out": float(x_out),
+        "n_dump": int(len(_dump_xs) - 1),
+        "dump_xs": _dump_xs,
     }
 
 
@@ -2779,6 +2861,10 @@ def write_polymesh(
     # Goldman body_fitted_OH: always strip+cyclics — never cassette_OH.
     # HOH volume-fail fallback MUST land on cassette even if yspan < pitch.
     if want_cassette or ((not use_hybrid) and (not use_body) and yspan + 2.0 * d_o_gate >= float(pitch)):
+        # Force dump ≥ TE+1c before cassette write (job x_dn_c may be shorter).
+        x_te_metal = max(p[0] for p in poly0)
+        x_out = max(float(x_out), float(x_te_metal) + 1.0 * float(spec.chord_m))
+        cfd["x_dn_c"] = max(float(cfd.get("x_dn_c") or 0), (x_out - float(spec.chord_m)) / max(float(spec.chord_m), 1e-9))
         cas = build_cassette_oh(
             poly0,
             pitch=pitch,
@@ -2794,6 +2880,7 @@ def write_polymesh(
             stretch=stretch,
             d_o=d_o_gate,
             g_min=float(gap0["g_min"]),
+            chord_m=float(spec.chord_m),
         )
         y_shift = 0.0
         ogrid = cas["ogrids"][0]
