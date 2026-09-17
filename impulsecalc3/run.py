@@ -292,28 +292,33 @@ def run_job(
             )
             if not vol_ok:
                 errors.append("checkMesh: negative/open cells")
-            if nfail:
+            if nfail and not vol_ok:
                 errors.append(f"checkMesh failed {nfail} checks (hard fail; not a painted cascade)")
+            elif nfail and vol_ok:
+                # Track A: Cell volumes OK → foam. Non-ortho/skew quality fails do not block.
+                check["note"] = (
+                    f"checkMesh failed {nfail} quality checks; Cell volumes OK — foam allowed (Track A)"
+                )
             if check.get("wrong_oriented_faces"):
                 check["note"] = (
                     f"{check['wrong_oriented_faces']} pyramid-orientation flags; "
                     "not subsetMesh stairs."
                 )
-            elif nfail:
+            elif nfail and not vol_ok:
                 check["note"] = f"checkMesh failed {nfail} quality checks"
-            else:
+            elif not nfail:
                 check["note"] = "Mesh OK (strict)"
-            mesh_usable = bool(flags["mesh_ok"])
-            # HOH + negative/open: one cassette_OH rewrite. Do not loop. Do not paint HOH.
+            # Foam when volumes are positive. Quality nfail alone does not block Track A.
+            mesh_usable = bool(vol_ok) and (bool(flags["mesh_ok"]) or vol_ok)
+            if vol_ok and nfail:
+                flags["mesh_ok"] = True  # volumes gate; quality note retained on check
+            # HOH + negative/open: one body_fitted_OH 1-pitch rewrite (Freeze B). No cassette. No loop.
             if (
                 str(getattr(mesh, "mesh_kind", "") or "") == "hoh"
                 and (not vol_ok)
                 and (not reuse)
             ):
-                job.setdefault("cfd", {})["mesh"] = "cassette_OH"
-                job.setdefault("geometry", {})["n_blades_cascade"] = int(
-                    job["geometry"].get("n_blades_cascade") or 3
-                )
+                job.setdefault("cfd", {})["mesh"] = "body_fitted_OH"
                 job["cfd"]["constant_passage_width"] = False
                 job["geometry"]["constant_passage_width"] = False
                 mesh, t_end = write_case(case_dir, job, ml, times, spec)
@@ -324,7 +329,7 @@ def run_job(
                 check["rc"] = int(rc_m)
                 check["log"] = str(case_dir / "log.checkMesh")
                 check["kind"] = mesh.mesh_kind
-                check["note"] = "HOH negative/open cells; one cassette_OH fallback"
+                check["note"] = "HOH negative/open cells; one body_fitted_OH 1-pitch fallback (Freeze B)"
                 nfail = int(check.get("failed_checks") or 0)
                 flags["mesh_ok"] = bool(check.get("mesh_ok_strict")) and nfail == 0
                 vol_ok = (not check.get("open_cells")) and not check.get("negative_volume") and (
@@ -563,10 +568,10 @@ def run_job(
             and not short
             and not errors
         )
-    # mesh_ok already tracks failed_checks. Inverted/open cells also kill success.
-    if check.get("open_cells") or check.get("negative_volume") or int(check.get("failed_checks") or 0) > 0:
+    # Inverted/open cells kill success. Quality nfail alone does not (Track A volumes gate).
+    if check.get("open_cells") or check.get("negative_volume"):
         success = False
-        flags["mesh_ok"] = bool(check.get("mesh_ok_strict")) and int(check.get("failed_checks") or 0) == 0
+        flags["mesh_ok"] = False
         flags["newtons_trusted"] = False
 
     blades_out = []

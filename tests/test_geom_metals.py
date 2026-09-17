@@ -62,8 +62,10 @@ def test_circular_arc_marlin_still_builds(tmp_path: Path):
     notes = " ".join(mesh.check_notes).lower()
     assert "stair" in notes
     btxt = (case / "constant" / "polyMesh" / "boundary").read_text()
-    for name in ("blade0", "blade1", "blade2", "inlet", "outlet", "bottom", "top"):
+    for name in ("blade0", "inlet", "outlet", "bottom", "top"):
         assert name in btxt
+    assert mesh.patches.get("blade1", 0) == 0
+    assert mesh.patches["bottom"] == mesh.patches["top"]
     assert "type            cyclic" in btxt
     poly = profile_from_job(job)
     assert poly[0] == poly[-1]

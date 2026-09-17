@@ -394,6 +394,74 @@ def _parse_points(path: Path) -> list[tuple[float, float, float]] | None:
     return pts or None
 
 
+
+def _blade_polys_for_plot(job: dict[str, Any] | None) -> list[list[tuple[float, float]]]:
+    """Mesh blade polys post-stacked ×N for UI cassette look (Freeze B).
+
+    Live polyMesh is 1-pitch / blade0 only. Do not remesh ×3 — translate copies in y.
+    """
+    if not job:
+        return []
+    try:
+        from .job import pitch_m as _pitch_m
+        pitch = float(_pitch_m(job))
+    except Exception:
+        pitch = float((job.get("geometry") or {}).get("pitch_m") or 0.0) or 0.01
+    n_viz = int(job.get("_viz_stack_blades") or (job.get("geometry") or {}).get("n_blades_cascade") or 3)
+    n_viz = max(n_viz, 1)
+
+    def _stack(base: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
+        return [[(float(pt[0]), float(pt[1]) + k * pitch) for pt in base] for k in range(n_viz)]
+
+    raw = job.get("_blade_polys")
+    if raw:
+        # One-pitch mesh → single poly; stack for viz. If already multi, pass through.
+        polys = [[(float(p[0]), float(p[1])) for p in bp] for bp in raw]
+        if len(polys) == 1 and n_viz > 1:
+            return _stack(polys[0])
+        return polys
+    try:
+        from .geometry import center_in_pitch, profile_from_job, spec_from_job
+        spec = spec_from_job(job)
+        poly = profile_from_job(job, spec)
+        try:
+            poly0, _ = center_in_pitch(poly, pitch)
+        except Exception:
+            poly0 = poly
+        return _stack([(float(pt[0]), float(pt[1])) for pt in poly0])
+    except Exception:
+        return []
+
+
+def _mask_field_through_metal(X, Y, Zi, blade_polys_m: list[list[tuple[float, float]]]):
+    """NaN grid samples that fall inside blade metal (mm grid, metre polys)."""
+    import numpy as np
+    if not blade_polys_m or Zi is None:
+        return Zi
+    from .mesh import point_in_closed_poly
+    out = np.array(Zi, dtype=float, copy=True)
+    # polys in metres; X,Y in mm
+    polys_mm = [[(p[0] * 1000.0, p[1] * 1000.0) for p in bp] for bp in blade_polys_m]
+    flat = out.ravel()
+    xf = np.asarray(X).ravel()
+    yf = np.asarray(Y).ravel()
+    for i in range(flat.size):
+        if not np.isfinite(flat[i]):
+            continue
+        xi, yi = float(xf[i]), float(yf[i])
+        for bp in polys_mm:
+            if point_in_closed_poly(xi, yi, bp):
+                flat[i] = np.nan
+                break
+    return flat.reshape(out.shape)
+
+
+def _draw_metal(ax, blade_polys_m: list[list[tuple[float, float]]]) -> None:
+    for bp in blade_polys_m:
+        bx = [p[0] * 1000.0 for p in bp]
+        by = [p[1] * 1000.0 for p in bp]
+        ax.fill(bx, by, facecolor="#c8c8c8", edgecolor="#222", lw=0.7, zorder=6)
+
 def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job: dict[str, Any] | None = None) -> dict[str, str]:
     times = foam_time_dirs(case_dir)
     if not times:
@@ -497,6 +565,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         paths["contour_U"] = str(fu)
         import matplotlib.tri as mtri
         triang = mtri.Triangulation(x, y)
+        blade_polys_m = _blade_polys_for_plot(job)
         xlo, xhi = float(x.min()), float(x.max())
         if job:
             try:
@@ -519,32 +588,19 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         show = inlet_strip | departed
         Ui_s = np.where(show, Ui, np.nan)
         Vi_s = np.where(show, Vi, np.nan)
+        _bp = _blade_polys_for_plot(job)
+        Ui_s = _mask_field_through_metal(X, Y, Ui_s, _bp)
+        Vi_s = _mask_field_through_metal(X, Y, Vi_s, _bp)
         speed = np.hypot(np.nan_to_num(Ui_s, nan=0.0), np.nan_to_num(Vi_s, nan=0.0))
         fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
-        cf = ax.contourf(X, Y, np.ma.masked_invalid(np.hypot(Ui_s, Vi_s)), levels=24, cmap="turbo")
+        _spd = _mask_field_through_metal(X, Y, np.hypot(Ui_s, Vi_s), _blade_polys_for_plot(job))
+        cf = ax.contourf(X, Y, np.ma.masked_invalid(_spd), levels=24, cmap="turbo")
         ax.streamplot(
             xi, yi,
             np.nan_to_num(Ui_s, nan=0.0), np.nan_to_num(Vi_s, nan=0.0),
             color=np.where(show, speed, 0.0), cmap="turbo", density=1.4, linewidth=0.85, arrowsize=0.85,
         )
-        if job:
-            try:
-                from .geometry import center_in_pitch, profile_from_job, spec_from_job
-                from .job import pitch_m as _pitch_m
-                spec = spec_from_job(job)
-                poly = profile_from_job(job, spec)
-                pitch = _pitch_m(job)
-                try:
-                    poly0, _ = center_in_pitch(poly, pitch)
-                except Exception:
-                    poly0 = poly
-                n_b = int(job["geometry"].get("n_blades_cascade") or 3)
-                for k in range(n_b):
-                    bx = [pt[0] * 1000.0 for pt in poly0]
-                    by = [(pt[1] + k * pitch) * 1000.0 for pt in poly0]
-                    ax.fill(bx, by, facecolor="#c8c8c8", edgecolor="#222", lw=0.6, zorder=6)
-            except Exception:
-                pass
+        _draw_metal(ax, _blade_polys_for_plot(job))
         ax.set_aspect("equal")
         _crop_cascade_ax(ax, job)
         ax.set_xlabel("x [mm]")
@@ -569,30 +625,14 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         elif tvals and len(tvals) == len(cc) and job:
             rspec = float((job.get("gas") or {}).get("r_specific_j_kg_k") or 287.0)
             a_loc = np.sqrt(gamma * rspec * np.array(tvals))
+        blade_polys_m = _blade_polys_for_plot(job)
         def _fill_blades(ax_):
-            if not job:
-                return
-            try:
-                from .geometry import center_in_pitch, profile_from_job, spec_from_job
-                from .job import pitch_m as _pitch_m
-                spec = spec_from_job(job)
-                poly = profile_from_job(job, spec)
-                pitch = _pitch_m(job)
-                try:
-                    poly0, _ = center_in_pitch(poly, pitch)
-                except Exception:
-                    poly0 = poly
-                n_b = int(job["geometry"].get("n_blades_cascade") or 3)
-                for k in range(n_b):
-                    bx = [pt[0] * 1000.0 for pt in poly0]
-                    by = [(pt[1] + k * pitch) * 1000.0 for pt in poly0]
-                    ax_.fill(bx, by, facecolor="#c8c8c8", edgecolor="#222", lw=0.6, zorder=6)
-            except Exception:
-                return
+            _draw_metal(ax_, blade_polys_m)
         if a_loc is not None:
             mach = umag / np.maximum(a_loc, 1.0)
             Mi = np.ma.filled(mtri.LinearTriInterpolator(triang, mach)(X, Y), np.nan)
             fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
+            Mi = _mask_field_through_metal(X, Y, Mi, blade_polys_m)
             cf = ax.contourf(X, Y, np.ma.masked_invalid(Mi), levels=24, cmap="turbo")
             ax.streamplot(
                 xi, yi,
@@ -670,6 +710,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             Tv = np.array(tvals, dtype=float)
             Ti = np.ma.filled(mtri.LinearTriInterpolator(triang, Tv)(X, Y), np.nan)
             fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
+            Ti = _mask_field_through_metal(X, Y, Ti, blade_polys_m)
             cf = ax.contourf(X, Y, np.ma.masked_invalid(Ti), levels=24, cmap="inferno")
             _fill_blades(ax)
             ax.set_aspect("equal")

@@ -1917,9 +1917,15 @@ def build_cassette_oh(
     chord_m: float | None = None,
     dump_xs: np.ndarray | None = None,
 ) -> dict:
-    """Three physical C's in one polyMesh. Fluid outside every C. No cyclic. No Gmsh."""
+    """Three physical C's in one polyMesh. Fluid outside every C.
+
+    Pitch-matching translational cyclics on bottom/top (separation = n_blades*pitch,
+    matching nFaces via shared axial nodes). Full-height inlet/outlet ducts span the
+    three-blade stack — no y-stubs, no stepped L/R lid cutoffs.
+    """
     notes: list[str] = []
     blades = [_shift_poly(poly0, k * pitch) for k in range(n_blades)]
+    Y = float(n_blades) * float(pitch)
     d_use = min(float(d_o), 0.28 * max(float(g_min), 1e-6), 0.00045)
     if d_use < float(d_o) - 1e-16:
         notes.append(f"d_o {d_o:.3g} → {d_use:.3g} m so collars clear Gate-0 gap")
@@ -1945,20 +1951,36 @@ def build_cassette_oh(
             )
     all_y0 = min(a[2] for a in aabbs)
     all_y1 = max(a[3] for a in aabbs)
-    lid = max(0.5 * d_use, 0.0005)
-    y_bot = all_y0 - lid
-    y_top = all_y1 + lid
-    # DUMP 1.0c: x_out >= x_TE + chord; first 0.4c clustered; stretch <= 1.25.
+    margin = max(0.5 * d_use, 0.15e-3)
+    y_bot = float(all_y0) - margin
+    y_top = y_bot + Y
+    if float(all_y1) + 1e-9 >= y_top - margin:
+        y_bot = 0.5 * (float(all_y0) + float(all_y1)) - 0.5 * Y
+        y_top = y_bot + Y
+        notes.append(
+            f"cyclic strip centered on O stack; clearance bot={all_y0 - y_bot:.3e} "
+            f"top={y_top - all_y1:.3e} m"
+        )
+    if float(all_y0) <= y_bot + 1e-9 or float(all_y1) >= y_top - 1e-9:
+        raise RuntimeError(
+            f"cassette metal/O does not fit in n_blades*pitch cyclic strip "
+            f"Y={Y:.6g} y_bot={y_bot:.6g} y_top={y_top:.6g} "
+            f"O_y=[{all_y0:.6g},{all_y1:.6g}]"
+        )
     x_te = max(max(p[0] for p in bp) for bp in blades)
-    c_use = float(chord_m) if chord_m not in (None, "") else max(x_te - min(min(p[0] for p in bp) for bp in blades), 1e-6)
+    c_use = float(chord_m) if chord_m not in (None, "") else max(
+        x_te - min(min(p[0] for p in bp) for bp in blades), 1e-6
+    )
     x_out = max(float(x_out), float(x_te) + 1.0 * c_use)
     if dump_xs is not None:
         _dump_xs = np.asarray(dump_xs, dtype=float).copy()
         _dump_xs = _dump_xs - float(_dump_xs[0]) + float(x_te)
         _dump_xs[-1] = x_out
     else:
-        # TE wall Δx ≈ first O radial cell (d_o growth), not LE far spacing.
-        dx_te = max(float(d_use) * (float(stretch) - 1.0) / max(float(stretch) ** max(int(n_rad), 1) - 1.0, 1e-12), 1e-7)
+        dx_te = max(
+            float(d_use) * (float(stretch) - 1.0) / max(float(stretch) ** max(int(n_rad), 1) - 1.0, 1e-12),
+            1e-7,
+        )
         dx_te = min(dx_te, 0.05 * c_use)
         _dump_xs = dump_xs_1c(x_te, c_use, dx_te, n_near=10, stretch_max=1.25, L_dump_c=1.0)
         x_out = float(_dump_xs[-1])
@@ -1966,54 +1988,151 @@ def build_cassette_oh(
         f"DUMP 1.0c: x_TE={x_te:.6g} x_out={x_out:.6g} n_dump={len(_dump_xs)-1} "
         f"L_dump/c={(x_out-x_te)/c_use:.3g} first_Δx={(_dump_xs[1]-_dump_xs[0]):.3e}"
     )
+    n_st = max(int(n_cyc) * 2, 32, int(n_fill) // 2)
+    xs_le = np.linspace(float(x_in), float(x_te), n_st + 1)
+    xs_cyc = np.unique(np.concatenate([xs_le[:-1], np.asarray(_dump_xs, dtype=float)]))
+    xs_cyc[0] = float(x_in)
+    xs_cyc[-1] = float(x_out)
+    P_bot = np.column_stack([xs_cyc, np.full(xs_cyc.shape[0], y_bot)])
+    P_top = np.column_stack([xs_cyc, np.full(xs_cyc.shape[0], y_top)])
+    n_cyc_faces = int(xs_cyc.shape[0] - 1)
+
     h_blocks: list[np.ndarray] = []
-    n_st = max(n_cyc, 24)
-    n_span = max(n_fill, 8)
+    n_span = max(int(n_fill), 10)
+    n_span_io = max(n_span, 12)
+
     for k in range(n_blades - 1):
         _ps_a, ss_a = _ring_ps_ss(outers[k])
         ps_b, _ss_b = _ring_ps_ss(outers[k + 1])
         h_blocks.append(_passage_tfi(ss_a, ps_b, n_st, n_span, f"pass{k}"))
         notes.append(f"passage TFI blade{k} SS-offset vs blade{k+1} PS-offset (arc length)")
-        # inlet / outlet of this channel
         s0 = resample_open_arclength(ss_a, n_st + 1)
         n0 = resample_open_arclength(ps_b, n_st + 1)
         s_head = _lin_pack_end((x_in, float(s0[0, 1])), s0[0], n_in, max(stretch, 1.0))
         n_head = _lin_pack_end((x_in, float(n0[0, 1])), n0[0], n_in, max(stretch, 1.0))
-        west_in = _lin(s_head[0], n_head[0], n_span)
-        east_in = _lin(s0[0], n0[0], n_span)
+        west_in = _lin(s_head[0], n_head[0], n_span_io)
+        east_in = _lin(s0[0], n0[0], n_span_io)
         h_blocks.append(_pos_block(tfi_block(s_head, n_head, west_in, east_in), f"in{k}"))
-        # Dump: sample along dump_xs (TE+1c clustered); hold TE y — no Cartesian jump.
         ys_s = float(s0[-1, 1])
         ys_n = float(n0[-1, 1])
         s_tail = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], ys_s)])
         n_tail = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], ys_n)])
-        west_out = _lin(s0[-1], n0[-1], n_span)
-        east_out = _lin(s_tail[-1], n_tail[-1], n_span)
+        west_out = _lin(s0[-1], n0[-1], n_span_io)
+        east_out = _lin(s_tail[-1], n_tail[-1], n_span_io)
         h_blocks.append(_pos_block(tfi_block(s_tail, n_tail, west_out, east_out), f"out{k}"))
-    # floor under blade0 PS-offset; lid above last SS-offset
-    ps0, ss0 = _ring_ps_ss(outers[0])
+
+    ps0, _ss0 = _ring_ps_ss(outers[0])
     _psN, ssN = _ring_ps_ss(outers[-1])
-    ps0r = resample_open_arclength(ps0, n_st + 1)
-    ssNr = resample_open_arclength(ssN, n_st + 1)
-    floor_s = np.column_stack([ps0r[:, 0], np.full(ps0r.shape[0], y_bot)])
-    # keep floor x in domain
-    floor_s[:, 0] = np.clip(floor_s[:, 0], x_in, x_out)
-    h_blocks.append(_passage_tfi(floor_s, ps0r, n_st, max(n_fill, 4), "floor"))
-    lid_n = np.column_stack([ssNr[:, 0], np.full(ssNr.shape[0], y_top)])
-    lid_n[:, 0] = np.clip(lid_n[:, 0], x_in, x_out)
-    h_blocks.append(_passage_tfi(ssNr, lid_n, n_st, max(n_fill, 4), "lid"))
-    # cavity of the TOP C only (lower U's hold the neighbor)
+    n_floor = max(n_span // 2, 6)
+    # REPAIR (1/1): mid-gap translational cyclics — P_top = P_bot+(0,Y).
+    # y=const floor↔PS TFI folds on nested C (min_area<0). Mid-gap matches nFaces.
+    def _y_at_x_ring(ring: np.ndarray, x: float, which: str) -> float:
+        rx, ry = ring[:, 0], ring[:, 1]
+        ys = []
+        for i in range(len(rx) - 1):
+            x0, x1 = float(rx[i]), float(rx[i + 1])
+            if (x0 - x) * (x1 - x) > 0 and abs(x0 - x) > 1e-14 and abs(x1 - x) > 1e-14:
+                continue
+            if abs(x1 - x0) < 1e-16:
+                if abs(x0 - x) < 1e-12:
+                    ys.append(float(ry[i]))
+                continue
+            t = (x - x0) / (x1 - x0)
+            if -1e-9 <= t <= 1.0 + 1e-9:
+                ys.append(float(ry[i] + t * (ry[i + 1] - ry[i])))
+        if not ys:
+            j = int(np.argmin(np.abs(rx - x)))
+            return float(ry[j])
+        return float(min(ys) if which == "min" else max(ys))
+
+    o0 = outers[0]
+    img = outers[-1].copy()
+    img[:, 1] = img[:, 1] - Y  # periodic image of last blade below blade0
+    x_le_m = float(min(o0[:, 0].min(), img[:, 0].min()))
+    x_te_m = float(max(o0[:, 0].max(), img[:, 0].max()))
+    xs_m = np.linspace(float(x_in), float(x_out), n_cyc_faces + 1)
+    P_bot = np.zeros((xs_m.shape[0], 2))
+    for i, xv in enumerate(xs_m):
+        if x_le_m - 1e-9 <= xv <= x_te_m + 1e-9:
+            y = 0.5 * (_y_at_x_ring(o0, float(xv), "min") + _y_at_x_ring(img, float(xv), "max"))
+        elif xv < x_le_m:
+            y = 0.5 * (_y_at_x_ring(o0, x_le_m, "min") + _y_at_x_ring(img, x_le_m, "max"))
+        else:
+            y = 0.5 * (_y_at_x_ring(o0, x_te_m, "min") + _y_at_x_ring(img, x_te_m, "max"))
+        # Keep mid-gap inside the cyclic strip
+        y = min(max(float(y), y_bot + 1e-6), y_top - Y + 1e-6)
+        P_bot[i] = (float(xv), float(y))
+    P_top = P_bot.copy()
+    P_top[:, 1] = P_bot[:, 1] + Y
+    # Floor: mid-gap → PS0 offset (same count, arc-resample PS to n)
+    ps0r = resample_open_arclength(ps0, P_bot.shape[0])
+    # Align ps0r x toward P_bot x by rebuilding north as envelope at P_bot x
+    north_f = np.column_stack([P_bot[:, 0], [_y_at_x_ring(o0, float(x), "min") for x in P_bot[:, 0]]])
+    h_blocks.append(_passage_tfi(P_bot, north_f, int(P_bot.shape[0] - 1), n_floor, "floor"))
+    south_l = np.column_stack([P_top[:, 0], [_y_at_x_ring(outers[-1], float(x), "max") for x in P_top[:, 0]]])
+    h_blocks.append(_passage_tfi(south_l, P_top, int(P_top.shape[0] - 1), n_floor, "lid"))
+    n_cyc_faces = int(P_bot.shape[0] - 1)
+    notes.append(f"REPAIR: mid-gap cyclics nFaces={n_cyc_faces} Y={Y:.6g}")
+
+    y_in_lo = float(resample_open_arclength(ps0, n_st + 1)[0, 1])
+    y_in_hi = float(resample_open_arclength(ssN, n_st + 1)[0, 1])
+    x_le_o = min(float(a[0]) for a in aabbs)
+    x_le_o = max(x_le_o, float(x_in) + 1e-6)
+    if y_in_lo - y_bot > 2e-5:
+        n_ysw = max(n_floor, 6)
+        west_sw = _lin((x_in, y_bot), (x_in, y_in_lo), n_ysw)
+        east_sw = _lin((x_le_o, y_bot), (x_le_o, y_in_lo), n_ysw)
+        south_sw = _lin(west_sw[0], east_sw[0], n_in)
+        north_sw = _lin(west_sw[-1], east_sw[-1], n_in)
+        try:
+            h_blocks.append(_pos_block(tfi_block(south_sw, north_sw, west_sw, east_sw), "in_sw"))
+            notes.append("full-height inlet: SW corner duct (no y-stub)")
+        except Exception as exc:
+            notes.append(f"in_sw skipped: {exc}")
+    if y_top - y_in_hi > 2e-5:
+        n_ynw = max(n_floor, 6)
+        west_nw = _lin((x_in, y_in_hi), (x_in, y_top), n_ynw)
+        east_nw = _lin((x_le_o, y_in_hi), (x_le_o, y_top), n_ynw)
+        south_nw = _lin(west_nw[0], east_nw[0], n_in)
+        north_nw = _lin(west_nw[-1], east_nw[-1], n_in)
+        try:
+            h_blocks.append(_pos_block(tfi_block(south_nw, north_nw, west_nw, east_nw), "in_nw"))
+            notes.append("full-height inlet: NW corner duct (no y-stub)")
+        except Exception as exc:
+            notes.append(f"in_nw skipped: {exc}")
+
+    y_out_lo = float(resample_open_arclength(ps0, n_st + 1)[-1, 1])
+    y_out_hi = float(resample_open_arclength(ssN, n_st + 1)[-1, 1])
+    if y_out_lo - y_bot > 2e-5:
+        n_yse = max(n_floor, 6)
+        s_se = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], y_bot)])
+        n_se = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], y_out_lo)])
+        west_se = _lin(s_se[0], n_se[0], n_yse)
+        east_se = _lin(s_se[-1], n_se[-1], n_yse)
+        try:
+            h_blocks.append(_pos_block(tfi_block(s_se, n_se, west_se, east_se), "out_se"))
+            notes.append("full-height outlet: SE corner dump (no y-stub)")
+        except Exception as exc:
+            notes.append(f"out_se skipped: {exc}")
+    if y_top - y_out_hi > 2e-5:
+        n_yne = max(n_floor, 6)
+        s_ne = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], y_out_hi)])
+        n_ne = np.column_stack([_dump_xs, np.full(_dump_xs.shape[0], y_top)])
+        west_ne = _lin(s_ne[0], n_ne[0], n_yne)
+        east_ne = _lin(s_ne[-1], n_ne[-1], n_yne)
+        try:
+            h_blocks.append(_pos_block(tfi_block(s_ne, n_ne, west_ne, east_ne), "out_ne"))
+            notes.append("full-height outlet: NE corner dump (no y-stub)")
+        except Exception as exc:
+            notes.append(f"out_ne skipped: {exc}")
+
     spl = _down_u_splits(outers[-1])
     if spl is not None:
-        inner_hi = resample_closed(blades[-1], max(4 * (2 * n_cyc + n_in + n_out), 200))
-        if polygon_signed_area([(float(x), float(y)) for x, y in inner_hi]) < 0:
-            inner_hi = inner_hi[::-1].copy()
-        off_hi = outers[-1]
-        # cavity on the offset ring of the last blade; splits are indices into that ring
         try:
             n_stem = max(int(n_in), int(n_cyc), 12)
             inner_idx = spl["inner"]
             kNW, kNE = spl["kNW"], spl["kNE"]
+            off_hi = outers[-1]
             cav_w = _resample_xy(inner_idx[: kNW + 1], off_hi, n_stem)
             cav_n = _resample_xy(inner_idx[kNW : kNE + 1], off_hi, n_cyc)
             cav_e = _resample_xy(inner_idx[kNE:], off_hi, n_stem)[::-1].copy()
@@ -2024,6 +2143,7 @@ def build_cassette_oh(
             notes.append("cavity TFI on top C only (lower cups nest the neighbor)")
         except Exception as exc:
             notes.append(f"top cavity TFI skipped: {exc}")
+
     kept = []
     for hb in h_blocks:
         ni, nj, _ = hb.shape
@@ -2045,8 +2165,12 @@ def build_cassette_oh(
             kept.append(hb)
     h_blocks = kept
     first_cell = float(np.mean(np.linalg.norm(ogrids[0][:, 1, :] - ogrids[0][:, 0, :], axis=1)))
-    notes.append("mesh_kind cassette_OH: 3 closed metals, fluid outside every C, lid/floor WALL not cyclic.")
-    notes.append("NOT Gmsh. NOT y(x) passage_OH. NOT subsetMesh stairs.")
+    notes.append(
+        "mesh_kind cassette_OH: 3 closed metals, fluid outside every C, "
+        f"bottom/top translational cyclic Y={Y:.6g} m (matching nFaces via shared xs)."
+    )
+    notes.append("NOT Gmsh. NOT y(x) passage_OH. NOT subsetMesh stairs. NOT lid/floor WALL.")
+    notes.append(f"cyclic n_axial_faces={n_cyc_faces} inlet/outlet full-height ducts (corner fills). repair=vertical-or-midgap-cyclics")
     return {
         "ogrids": ogrids,
         "h_blocks": h_blocks,
@@ -2059,10 +2183,15 @@ def build_cassette_oh(
         "notes": notes,
         "aabbs": aabbs,
         "n_i": int(ogrids[0].shape[0]),
+        "x_in": float(x_in),
         "x_te": float(x_te),
         "x_out": float(x_out),
         "n_dump": int(len(_dump_xs) - 1),
         "dump_xs": _dump_xs,
+        "cyclic_Y": float(Y),
+        "n_cyc_faces": n_cyc_faces,
+        "P_bot": P_bot,
+        "P_top": P_top,
     }
 
 
@@ -2787,11 +2916,10 @@ def write_polymesh(
                 y_max=max((p[1] for poly in polys for p in poly), default=0.0) + 0.0,
             )
         except Exception as exc:
-            # Negative hex volumes / leftover seams. One cassette_OH fallback. Do not loop HOH.
-            job["_hoh_fallback"] = f"HOH writer refuse → cassette_OH once: {exc}"
-            cfd["mesh"] = "cassette_OH"
-            g["n_blades_cascade"] = 3
-            n_blades = 3
+            # Freeze B: HOH refuse → 1-pitch body_fitted_OH. No 3-blade cassette remesh. No HOH loop.
+            job["_hoh_fallback"] = f"HOH writer refuse → body_fitted_OH 1-pitch once: {exc}"
+            cfd["mesh"] = "body_fitted_OH"
+            n_blades = 1
     x_in = -float(cfd["x_up_c"]) * spec.chord_m
     x_out = spec.chord_m + float(cfd["x_dn_c"]) * spec.chord_m
     n_in = int(cfd["n_inlet"])
@@ -2824,9 +2952,11 @@ def write_polymesh(
     if n_le > n_in:
         # Optional west/LE share boost (inlet-side arc of the O ring).
         n_in = n_le
-    # hybrid_OH_tri: one pitch, true cyclic — do not stack 3 premeshed blades.
-    if use_hybrid:
-        n_blades = 1
+    # Freeze B: live solve is always 1-pitch translational cyclic (period = 1×pitch).
+    # Viz post-stacks blade polys ×N for Mesh/Fields cassette look — do not remesh ×N.
+    viz_n = max(int(g.get("n_blades_cascade") or 3), 1)
+    job["_viz_stack_blades"] = viz_n
+    n_blades = 1
     y_bot, y_top = -0.5 * pitch, 0.5 * pitch
 
     # 4-side ring: S/N = n_cyclic, W = n_inlet, E = n_outlet.
@@ -2857,9 +2987,16 @@ def write_polymesh(
             "Refuse mesh/solve."
         )
     d_o_gate = min(0.00045, 0.06 * spec.chord_m)
-    want_cassette = str(cfd.get("mesh") or "").strip() in ("cassette_OH", "cassette") or bool(job.get("_hoh_fallback"))
-    # Goldman body_fitted_OH: always strip+cyclics — never cassette_OH.
-    # HOH volume-fail fallback MUST land on cassette even if yspan < pitch.
+    # Freeze B: never remesh a live 3-blade cassette. Redirect cassette/HOH-fallback → body_fitted.
+    _mesh_ask = str(cfd.get("mesh") or "").strip()
+    if _mesh_ask in ("cassette_OH", "cassette") or bool(job.get("_hoh_fallback")):
+        cfd["mesh"] = "body_fitted_OH"
+        use_body = True
+        use_hybrid = False
+        if not job.get("_hoh_fallback"):
+            job["_cassette_redirect"] = "Freeze B: cassette_OH → body_fitted_OH 1-pitch cyclic"
+    want_cassette = False
+    # Nested yspan>=s used to force cassette; Freeze B keeps 1-pitch if metal fits (g_min>0).
     if want_cassette or ((not use_hybrid) and (not use_body) and yspan + 2.0 * d_o_gate >= float(pitch)):
         # Force dump ≥ TE+1c before cassette write (job x_dn_c may be shorter).
         x_te_metal = max(p[0] for p in poly0)
@@ -2891,6 +3028,8 @@ def write_polymesh(
         oh_notes = list(cas["notes"])
         d_o = cas["d_o"]
         y_bot, y_top = cas["y_bot"], cas["y_top"]
+        x_out = float(cas["x_out"])
+        x_in = float(cas.get("x_in", x_in))
         oh_notes.append(
             f"Gate 0 g_min={float(gap0['g_min'])*1e3:.3f} mm > 0; mesh_kind cassette_OH "
             f"(yspan={yspan*1e3:.2f} mm + 2 d_o >= s={pitch*1e3:.2f} mm)"
@@ -3356,9 +3495,9 @@ def write_polymesh(
             buckets["frontAndBack"].append((fverts, owner, c))
         elif key in wall_keys:
             buckets[wall_keys[key]].append((fverts, owner, c))
-        elif abs(x - x_in) < 2e-4:
+        elif abs(x - x_in) < 5e-4:
             buckets["inlet"].append((fverts, owner, c))
-        elif abs(x - x_out) < 2e-4:
+        elif abs(x - x_out) < 5e-4:
             buckets["outlet"].append((fverts, owner, c))
         elif passage is not None and passage.cyclic and (
             abs(y - passage.o_south[0, 0, 1]) < 1e-6
@@ -3370,6 +3509,21 @@ def write_polymesh(
             or abs(y - (passage.o_south[-1, 0, 1] + pitch)) < 1e-6
         ):
             buckets["top"].append((fverts, owner, c))
+        elif cas is not None and cas.get("P_bot") is not None:
+            # Mid-gap cyclics: tag by nearest point on P_bot / P_top (not y=const).
+            import numpy as _np
+            pb = _np.asarray(cas["P_bot"], dtype=float)
+            pt = _np.asarray(cas["P_top"], dtype=float)
+            db = float(_np.min((pb[:, 0] - x) ** 2 + (pb[:, 1] - y) ** 2)) ** 0.5
+            dt = float(_np.min((pt[:, 0] - x) ** 2 + (pt[:, 1] - y) ** 2)) ** 0.5
+            tol_cyc = max(2.5e-4, 0.02 * float(cas.get("cyclic_Y") or pitch))
+            if db <= tol_cyc or dt <= tol_cyc:
+                if db <= dt:
+                    buckets["bottom"].append((fverts, owner, c))
+                else:
+                    buckets["top"].append((fverts, owner, c))
+            else:
+                unclassified += 1
         elif (passage is None) and abs(y - y_min) < 1e-7:
             buckets["bottom"].append((fverts, owner, c))
         elif (passage is None) and abs(y - y_max) < 1e-7:
@@ -3379,17 +3533,13 @@ def write_polymesh(
                 ymid = 0.5 * (passage.y_min + passage.y_max)
                 name = "blade0" if y < ymid else "blade1"
                 buckets[name].append((fverts, owner, c))
-            elif cas is not None:
-                ymid = 0.5 * (y_min + y_max)
-                name = "bottom" if y < ymid else "top"
-                buckets[name].append((fverts, owner, c))
             else:
                 unclassified += 1
     if unclassified:
         raise RuntimeError(f"{unclassified} boundary faces not on wall/inlet/outlet/cyclic/empty")
     if any(not buckets[n] for n in blade_names):
         raise RuntimeError("per-blade wall patches missing faces")
-    if cas is None and (buckets["bottom"] or buckets["top"]):
+    if buckets["bottom"] or buckets["top"]:
         if len(buckets["bottom"]) != len(buckets["top"]):
             raise RuntimeError(
                 f"cyclic face count mismatch bottom={len(buckets['bottom'])} top={len(buckets['top'])}"
@@ -3425,7 +3575,7 @@ def write_polymesh(
             return [lo_z0, hi_z0, hi_z1, lo_z1]
         return [lo_z0, lo_z1, hi_z1, hi_z0]
 
-    if hybrid_tris is not None and buckets["bottom"] and buckets["top"]:
+    if buckets["bottom"] and buckets["top"]:
         buckets["bottom"] = [
             (_canon_cyclic_outward(fv, side="bottom"), ow, c) for fv, ow, c in buckets["bottom"]
         ]
@@ -3457,7 +3607,8 @@ def write_polymesh(
     mesh_dir = case_dir / "constant" / "polyMesh"
     mesh_dir.mkdir(parents=True, exist_ok=True)
     n_internal = len(neighs)
-    sep = n_blades * pitch
+    # Translational cyclic period = exactly 1×pitch for the 1-pitch strip (Freeze B).
+    sep = float(pitch) if cas is None else float(cas.get("cyclic_Y") or (n_blades * pitch))
 
     def w(name: str, body: str, cls: str, obj: str, note: str = "") -> None:
         hdr = _foam_header(cls, obj, note=note) if note else _foam_header(cls, obj)
@@ -3473,20 +3624,16 @@ def write_polymesh(
     btxt = [f"{len(patch_order)}\n(\n"]
     for name in patch_order:
         if name in ("bottom", "top"):
-            if cas is not None:
-                ptype = "wall"
-                extra = "        inGroups        1(wall);\n"
-            else:
-                neigh = "top" if name == "bottom" else "bottom"
-                svec = sep if name == "bottom" else -sep
-                extra = (
-                    "        inGroups        1(cyclic);\n"
-                    "        matchTolerance  0.0001;\n"
-                    "        transform       translational;\n"
-                    f"        neighbourPatch  {neigh};\n"
-                    f"        separationVector (0 {svec:.12g} 0);\n"
-                )
-                ptype = "cyclic"
+            neigh = "top" if name == "bottom" else "bottom"
+            svec = sep if name == "bottom" else -sep
+            extra = (
+                "        inGroups        1(cyclic);\n"
+                "        matchTolerance  0.0001;\n"
+                "        transform       translational;\n"
+                f"        neighbourPatch  {neigh};\n"
+                f"        separationVector (0 {svec:.12g} 0);\n"
+            )
+            ptype = "cyclic"
         elif name == "frontAndBack":
             ptype = "empty"
             extra = "        inGroups        1(empty);\n"
@@ -3505,7 +3652,10 @@ def write_polymesh(
 
     if cas is not None:
         kind = "cassette_OH"
-        kind_note = "mesh: cassette_OH — three closed C metals, fluid outside every C, lid/floor walls."
+        kind_note = (
+            "mesh: cassette_OH — three closed C metals, fluid outside every C, "
+            "bottom/top translational cyclics (n_blades*pitch), full-height inlet/outlet."
+        )
     elif passage is not None:
         kind = "passage_OH"
         kind_note = "mesh: Goldman/Katsanis passage O+H (SS0 vs PS0+s). Not a pitch rectangle."
@@ -3524,7 +3674,8 @@ def write_polymesh(
     notes = [
         kind_note,
         "NOT Cartesian subsetMesh stair-step.",
-        f"{n_blades} blades, pitch {pitch:.6g} m, empty frontAndBack, slab {zth} m.",
+        f"{n_blades} blade(s) in polyMesh (viz_stack={job.get('_viz_stack_blades', 1)}), "
+        f"cyclic period={sep:.6g} m (=1×pitch), empty frontAndBack, slab {zth} m.",
         f"O n_around={n_i} (JSON n_around={n_around_req}; S/N=n_cyclic={n_cyc} E=n_outlet={n_out} W=n_inlet={n_in}) n_radial={n_rad}",
         f"n_cells={n_cells} first_cell≈{first_cell:.3g} m d_o={d_o:.3g} m min O-quad {a2:.3e} m2",
         f"y_shift to centre blade in pitch: {y_shift:.6g} m (rigid; metal angles unchanged).",
@@ -3621,7 +3772,7 @@ def write_mesh_preview_png(
     Not the cascade metal outline. Metal is a solid cutout; fluid shows every
     polygon edge. Reads case_dir/constant/polyMesh next to path.
     """
-    del job, spec  # preview is polyMesh-driven; metal cutouts from MeshBuild
+    # Freeze B: tile 1-pitch polyMesh wire × viz_stack for cassette look (no remesh).
     try:
         import matplotlib
 
@@ -3633,6 +3784,14 @@ def write_mesh_preview_png(
 
     path = Path(path)
     case_dir = path.parent
+    try:
+        from .job import pitch_m as _pitch_m
+        _pitch = float(_pitch_m(job))
+    except Exception:
+        _pitch = float(getattr(mesh, "pitch_m", None) or 0.01)
+    _viz_n = int(job.get("_viz_stack_blades") or (job.get("geometry") or {}).get("n_blades_cascade") or 1)
+    _viz_n = max(_viz_n, 1)
+    _ = spec
     mesh_dir = case_dir / "constant" / "polyMesh"
     if not (mesh_dir / "points").is_file() or not (mesh_dir / "faces").is_file():
         return
@@ -3676,18 +3835,38 @@ def write_mesh_preview_png(
     ax.set_facecolor("#0b0b0f")
     fig.patch.set_facecolor("#0b0b0f")
 
-    if polys_xy:
+    # Tile fluid wire + metals in y by k*pitch for UI cassette (polyMesh stays 1-pitch).
+    pitch_mm = _pitch * 1000.0
+    tiled_polys: list[np.ndarray] = []
+    tiled_colors: list[str] = []
+    tiled_segs: list[np.ndarray] = []
+    for k in range(_viz_n):
+        dy = k * pitch_mm
+        for xy, col in zip(polys_xy, colors):
+            shifted = xy.copy()
+            shifted[:, 1] = shifted[:, 1] + dy
+            tiled_polys.append(shifted)
+            tiled_colors.append(col)
+        for sg in segs:
+            s2 = sg.copy()
+            s2[:, 1] = s2[:, 1] + dy
+            tiled_segs.append(s2)
+    if tiled_polys:
         ax.add_collection(
-            PolyCollection(polys_xy, facecolors=colors, edgecolors="none", alpha=0.35, zorder=1)
+            PolyCollection(tiled_polys, facecolors=tiled_colors, edgecolors="none", alpha=0.35, zorder=1)
         )
-    if segs:
+    if tiled_segs:
         ax.add_collection(
-            LineCollection(segs, colors="#d8d4e8", linewidths=0.22, alpha=0.85, zorder=2)
+            LineCollection(tiled_segs, colors="#d8d4e8", linewidths=0.22, alpha=0.85, zorder=2)
         )
 
     metal_face = "#1a1a22"
     metal_edge = "#e8e6f2"
-    for k, poly in enumerate(mesh.blade_polys or []):
+    base_polys = list(mesh.blade_polys or [])
+    if len(base_polys) == 1 and _viz_n > 1:
+        bp0 = base_polys[0]
+        base_polys = [[(p[0], p[1] + k * _pitch) for p in bp0] for k in range(_viz_n)]
+    for k, poly in enumerate(base_polys):
         xs = [p[0] * 1000 for p in poly]
         ys = [p[1] * 1000 for p in poly]
         ax.fill(
@@ -3700,14 +3879,15 @@ def write_mesh_preview_png(
             label=("metal" if k == 0 else None),
         )
 
-    ax.axhline(mesh.y_min * 1000, color="#6e6a82", ls="--", lw=0.5, zorder=4)
-    ax.axhline(mesh.y_max * 1000, color="#6e6a82", ls="--", lw=0.5, zorder=4)
+    for k in range(_viz_n):
+        ax.axhline((mesh.y_min + k * _pitch) * 1000, color="#6e6a82", ls="--", lw=0.5, zorder=4)
+        ax.axhline((mesh.y_max + k * _pitch) * 1000, color="#6e6a82", ls="--", lw=0.5, zorder=4)
     ax.set_aspect("equal")
     ax.autoscale()
     # Crop dump length — NASA/Gmsh blade-to-blade view, not the full outlet H-block.
-    if mesh.blade_polys:
-        mx = [p[0] * 1000 for poly in mesh.blade_polys for p in poly]
-        my = [p[1] * 1000 for poly in mesh.blade_polys for p in poly]
+    if base_polys:
+        mx = [p[0] * 1000 for poly in base_polys for p in poly]
+        my = [p[1] * 1000 for poly in base_polys for p in poly]
         x0, x1 = min(mx), max(mx)
         y0, y1 = min(my), max(my)
         c = max(x1 - x0, 1.0)

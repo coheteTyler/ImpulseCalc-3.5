@@ -670,11 +670,11 @@ def _write_case_unlocked(
                 "expected ~3× (~120k+)"
             )
     job["_n_blades_patches"] = n_b
-    job["_lid_walls"] = mesh.mesh_kind == "cassette_OH"
-    job["_cyclic_pitch"] = (
-        mesh.mesh_kind in ("body_fitted_OH", "hybrid_OH_tri", "hoh")
-        and bool(mesh.patches.get("bottom"))
-    )
+    # Freeze B: 1-pitch cyclic solve; never lid walls on the live case.
+    job["_lid_walls"] = False
+    job["_cyclic_pitch"] = bool(mesh.patches.get("bottom")) and bool(mesh.patches.get("top"))
+    if not job.get("_viz_stack_blades"):
+        job["_viz_stack_blades"] = int((job.get("geometry") or {}).get("n_blades_cascade") or 3)
     if mesh.mesh_kind == "hoh":
         # HOH polyMesh uses one "blades" patch, not blade0/1/2.
         job["_n_blades_patches"] = 0
@@ -683,6 +683,8 @@ def _write_case_unlocked(
     write_solution(case_dir)
     t_end = write_control_dict(case_dir, job, times)
     write_fields(case_dir, job, ml)
+    # Same polylines as polyMesh blade patches — Fields mask must not re-derive metal.
+    job["_blade_polys"] = [[(float(x), float(y)) for x, y in bp] for bp in (mesh.blade_polys or [])]
     write_case_readme(case_dir, job, ml, times, mesh, t_end)
     write_mesh_preview_png(case_dir / "mesh_preview.png", job, spec, mesh)
     # boundary_conditions.json — what was actually written
@@ -697,9 +699,9 @@ def _write_case_unlocked(
         "outlet_p": job["cfd"].get("outlet_p"),
         "outlet_p_fieldInf": float(job["gas"]["p1_pa"]),
         "outlet_p_NOT": "0.95 p1",
-        "blades": "noSlip on blade0 blade1 blade2",
+        "blades": f"noSlip on blade0..blade{max(n_b-1, 0)} (live 1-pitch; viz stacks ×{job.get('_viz_stack_blades', 1)})",
         "frontAndBack": "empty",
-        "top_bottom": ("lid walls" if mesh.mesh_kind == "cassette_OH" else "cyclic pitch-periodic"),
+        "top_bottom": "cyclic translational period=1×pitch",
         "turbulence": "laminar",
         "predicted": True,
     }

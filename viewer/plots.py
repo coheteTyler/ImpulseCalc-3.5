@@ -96,8 +96,11 @@ def field_png(
     sc = ax.scatter(x, y, c=values, s=6, cmap="coolwarm", linewidths=0)
     fig.colorbar(sc, ax=ax, label=cbar, shrink=0.85)
     if blade_polys:
+        # Opaque metal fill from the same mesh blade polys (never contour through solid).
         for poly in blade_polys:
-            ax.plot([p[0] * 1000 for p in poly], [p[1] * 1000 for p in poly], "k", lw=0.8)
+            xs = [p[0] * 1000 for p in poly]
+            ys = [p[1] * 1000 for p in poly]
+            ax.fill(xs, ys, facecolor="#c8c8c8", edgecolor="#222", lw=0.7, zorder=5)
     ax.set_aspect("equal")
     ax.set_xlabel("x axial [mm]")
     ax.set_ylabel("y pitch [mm]")
