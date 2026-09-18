@@ -1,0 +1,18 @@
+{
+  "PASS": true,
+  "promoted": true,
+  "n_cells": 12934,
+  "vol_ok": true,
+  "leftover": 0,
+  "cyclic_nFaces": {
+    "bottom": 113,
+    "top": 113
+  },
+  "first_cell_m": 6.063157894735101e-07,
+  "d_o_m": 4.37e-05,
+  "n_rad": 20,
+  "r_north": 1.0,
+  "foam_ok": true,
+  "Fields_x3": true,
+  "contour_M": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_M.png"
+}

@@ -1,0 +1,108 @@
+{
+  "app": "ImpulseCalc3",
+  "name": "knobs_preview",
+  "article": "KNOBS PREVIEW \u2014 geometry test. Engineering aid, not a flight certificate. Not Marlin V2 live tree. Gas unsigned. PREDICTED is not a design load.",
+  "success": true,
+  "predicted": true,
+  "predicted_reason": "GEOMETRY TEST. Gas unsigned; isolate metal. Not Marlin V2. Photo is not the signed table.",
+  "flags": {
+    "mesh_ok": true,
+    "solve_ok": true,
+    "sample_on_wall": false,
+    "force_plateau": false,
+    "force_climbing": true,
+    "newtons_trusted": false,
+    "eta_from_cfd": false,
+    "synthetic": false,
+    "predicted": true
+  },
+  "errors": [
+    "MVP 1-chord smoke \u2014 forces may still climb; PREDICTED only \u2014 no \u03b7 truth"
+  ],
+  "mesh": {
+    "n_cells": 12934,
+    "first_cell_m": 6.063157894735101e-07,
+    "patches": {
+      "inlet": 94,
+      "outlet": 98,
+      "bottom": 113,
+      "top": 113,
+      "frontAndBack": 25868,
+      "blade0": 148
+    },
+    "kind": "body_fitted_OH",
+    "leftover": 0,
+    "r_north": 1.0,
+    "d_o_m": 4.37e-05,
+    "n_radial": 20
+  },
+  "checkMesh": {
+    "vol_ok": true,
+    "min_volume": 1.4500619e-14,
+    "open_cells": false,
+    "negative_volume": false,
+    "failed_checks": 1,
+    "note": "Track A volumes OK from staging promote",
+    "n_cells": 12934
+  },
+  "solve": {
+    "rc": 0,
+    "log": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/openfoam_cases/knobs_preview/log.rhoCentralFoam",
+    "end_seen": true,
+    "t_end_s": 1.0526316e-05,
+    "note": "MVP smoke rhoCentralFoam on promoted mesh (no second remesh)"
+  },
+  "viz": {
+    "pngs": [
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/Umag_latest.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_M.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_T.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_U.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_Umag.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_p.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_shock.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_stream.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/force_history.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/ft_history.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/mesh_preview.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/p_latest.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/triangles.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/wall_cp_blade0.png"
+    ],
+    "post_plots": {
+      "contour_p": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/contour_p.png",
+      "contour_U": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/contour_U.png",
+      "contour_stream": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/contour_stream.png",
+      "contour_M": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/contour_M.png",
+      "contour_shock": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/contour_shock.png",
+      "contour_T": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/contour_T.png",
+      "p_sequence_dir": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/plots/p_sequence"
+    },
+    "Fields_x3": true,
+    "contour_M": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/viewer_plots/contour_M.png",
+    "note": "Fields post-stack \u00d73 + metal mask; PREDICTED"
+  },
+  "case_dir": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/openfoam_cases/knobs_preview",
+  "geometry_test": true,
+  "t_end_s": 1.0526316e-05,
+  "t_chord_convective_s": 1.0526315789473684e-05,
+  "euler_work_j_kg": 813153.3214323564,
+  "Mw1": 1.4043669404740713,
+  "eta_from_cfd": null,
+  "promote": {
+    "promoted_from": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging",
+    "promoted_to": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/openfoam_cases/knobs_preview",
+    "n_cells": 12934,
+    "vol_ok": true,
+    "leftover": 0,
+    "cyclic_nFaces": {
+      "bottom": 113,
+      "top": 113
+    },
+    "first_cell_m": 6.063157894735101e-07,
+    "d_o_m": 4.37e-05,
+    "n_rad": 20,
+    "r_north": 1.0,
+    "mesh_preview": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/mesh_preview.png"
+  }
+}
