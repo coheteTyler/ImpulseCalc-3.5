@@ -89,9 +89,11 @@ def test_dump_xs_1c_packing_and_no_te_fence_helpers():
     assert abs(xs[0] - x_te) < 1e-15
     assert xs[-1] >= x_te + 1.0 * c - 1e-12
     assert (xs[1] - xs[0]) > 0
-    # first 0.4c clustered: more nodes in near band than a uniform 1c split would put there
-    n_near = int(np.sum(xs <= x_te + 0.4 * c + 1e-12)) - 1
-    assert 8 <= n_near <= 12
+    # Soft TE join: first Δx ≈ dx_near, successive growth ≤~1.25 (no chalk-line cliff).
+    assert abs((xs[1] - xs[0]) - dx) / dx < 0.35
+    dxs = np.diff(xs)
+    ratios = dxs[1:] / np.maximum(dxs[:-1], 1e-16)
+    assert float(np.max(ratios)) <= 1.26 + 1e-9
     # curved west dump is not a vertical fence
     west = np.column_stack([np.linspace(x_te - 0.001, x_te, 20), np.linspace(-0.004, 0.004, 20)])
     dump = _dump_block_from_west(west, xs)

@@ -455,6 +455,8 @@ def run_job(
                 viz["pngs"].append(str(preview))
             raise RuntimeError("skip field paint")
         cc = cell_centres(case_dir) if tds else None
+        _viz_n = int(job.get("_viz_stack_blades") or (job.get("geometry") or {}).get("n_blades_cascade") or 3)
+        _pitch = float(getattr(mesh, "pitch_m", 0.0) or 0.0)
         if tds and cc is not None:
             last = tds[-1][1]
             pv = read_scalar_field(last / "p", cc.shape[0])
@@ -467,6 +469,8 @@ def run_job(
                     title=f"p  t={tds[-1][0]:.4g} s",
                     cbar="p [Pa]",
                     blade_polys=mesh.blade_polys,
+                    pitch_m=_pitch,
+                    n_viz=_viz_n,
                 )
                 if png:
                     viz["pngs"].append(str(png))
@@ -481,6 +485,8 @@ def run_job(
                     title=f"|U|  t={tds[-1][0]:.4g} s",
                     cbar="|U| [m/s]",
                     blade_polys=mesh.blade_polys,
+                    pitch_m=_pitch,
+                    n_viz=_viz_n,
                 )
                 if png:
                     viz["pngs"].append(str(png))

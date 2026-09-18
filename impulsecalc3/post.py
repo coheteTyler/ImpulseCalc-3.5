@@ -462,6 +462,42 @@ def _draw_metal(ax, blade_polys_m: list[list[tuple[float, float]]]) -> None:
         by = [p[1] * 1000.0 for p in bp]
         ax.fill(bx, by, facecolor="#c8c8c8", edgecolor="#222", lw=0.7, zorder=6)
 
+
+def _viz_stack_n(job: dict[str, Any] | None) -> int:
+    if not job:
+        return 1
+    n = int(job.get("_viz_stack_blades") or (job.get("geometry") or {}).get("n_blades_cascade") or 3)
+    return max(n, 1)
+
+
+def _pitch_mm(job: dict[str, Any] | None) -> float:
+    if not job:
+        return 10.0
+    try:
+        from .job import pitch_m as _pitch_m
+        return float(_pitch_m(job)) * 1000.0
+    except Exception:
+        return float((job.get("geometry") or {}).get("pitch_m") or 0.01) * 1000.0
+
+
+def _stack_field_arrays(x, y, *arrays, pitch_mm: float, n_viz: int):
+    """Tile 1-pitch cell-centre fields ×n_viz in y (same as mesh wire Freeze B)."""
+    import numpy as np
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if n_viz <= 1:
+        return (x, y) + tuple(np.asarray(a, dtype=float) for a in arrays)
+    xs = [x]
+    ys = [y]
+    outs = [[np.asarray(a, dtype=float)] for a in arrays]
+    for k in range(1, int(n_viz)):
+        xs.append(x)
+        ys.append(y + k * float(pitch_mm))
+        for i, a in enumerate(arrays):
+            outs[i].append(np.asarray(a, dtype=float))
+    return (np.concatenate(xs), np.concatenate(ys)) + tuple(np.concatenate(o) for o in outs)
+
+
 def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job: dict[str, Any] | None = None) -> dict[str, str]:
     times = foam_time_dirs(case_dir)
     if not times:
@@ -489,7 +525,33 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         return {}
     x = np.array([c[0] for c in cc]) * 1000
     y = np.array([c[1] for c in cc]) * 1000
-    p = np.array(pvals)
+    p = np.array(pvals, dtype=float)
+    _n_viz = _viz_stack_n(job)
+    _pmm = _pitch_mm(job)
+    ux = uy = None
+    if uvals and len(uvals) == len(cc):
+        ux = np.array([u[0] for u in uvals], dtype=float)
+        uy = np.array([u[1] for u in uvals], dtype=float)
+    tv = np.array(tvals, dtype=float) if (tvals and len(tvals) == len(cc)) else None
+    rv = np.array(rhovals, dtype=float) if (rhovals and len(rhovals) == len(cc)) else None
+    # Freeze B: tile fields ×n_viz in y the same way mesh wires stack.
+    if ux is not None:
+        extras = [p, ux, uy]
+        if tv is not None:
+            extras.append(tv)
+        if rv is not None:
+            extras.append(rv)
+        stacked = _stack_field_arrays(x, y, *extras, pitch_mm=_pmm, n_viz=_n_viz)
+        x, y = stacked[0], stacked[1]
+        p, ux, uy = stacked[2], stacked[3], stacked[4]
+        idx = 5
+        if tv is not None:
+            tv = stacked[idx]; idx += 1
+        if rv is not None:
+            rv = stacked[idx]
+    else:
+        x, y, p = _stack_field_arrays(x, y, p, pitch_mm=_pmm, n_viz=_n_viz)
+    n_field = len(x)
     fig, ax = plt.subplots(figsize=(8, 4.2), dpi=120)
     sc = ax.scatter(x, y, c=p / 1e5, s=6, cmap="coolwarm", linewidths=0)
     ax.set_aspect("equal")
@@ -498,9 +560,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
     ax.set_ylabel("y [mm]")
     ax.set_title(f"p [bar]  t={latest} s  (cell centres, real solve)")
     fig.colorbar(sc, ax=ax, label="p [bar]")
-    if uvals and len(uvals) == len(cc):
-        ux = np.array([u[0] for u in uvals])
-        uy = np.array([u[1] for u in uvals])
+    if ux is not None and len(ux) == n_field:
         xmin = float(x.min())
         xspan = max(float(x.max() - xmin), 1e-9)
         inlet = x <= (xmin + 0.10 * xspan)
@@ -539,9 +599,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
     fig.savefig(fp)
     plt.close(fig)
     paths = {"contour_p": str(fp)}
-    if uvals and len(uvals) == len(cc):
-        ux = np.array([u[0] for u in uvals])
-        uy = np.array([u[1] for u in uvals])
+    if ux is not None and len(ux) == n_field:
         umag = np.hypot(ux, uy)
         fig, ax = plt.subplots(figsize=(8, 4.2), dpi=120)
         sc = ax.scatter(x, y, c=umag, s=6, cmap="viridis", linewidths=0)
@@ -575,7 +633,8 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             except Exception:
                 pass
         xi = np.linspace(xlo, xhi, 180)
-        yi = np.linspace(float(y.min()), float(y.max()), 140)
+        n_yi = max(140, int(140 * max(_n_viz, 1) * 0.85))
+        yi = np.linspace(float(y.min()), float(y.max()), n_yi)
         X, Y = np.meshgrid(xi, yi)
         Ui = np.ma.filled(mtri.LinearTriInterpolator(triang, ux)(X, Y), np.nan)
         Vi = np.ma.filled(mtri.LinearTriInterpolator(triang, uy)(X, Y), np.nan)
@@ -619,12 +678,12 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             except (TypeError, ValueError):
                 pass
         a_loc = None
-        if rhovals and len(rhovals) == len(cc) and pvals and len(pvals) == len(cc):
-            rho_a = np.maximum(np.array(rhovals), 1e-12)
-            a_loc = np.sqrt(gamma * np.array(pvals) / rho_a)
-        elif tvals and len(tvals) == len(cc) and job:
+        if rv is not None and len(rv) == n_field:
+            rho_a = np.maximum(rv, 1e-12)
+            a_loc = np.sqrt(gamma * p / rho_a)
+        elif tv is not None and len(tv) == n_field and job:
             rspec = float((job.get("gas") or {}).get("r_specific_j_kg_k") or 287.0)
-            a_loc = np.sqrt(gamma * rspec * np.array(tvals))
+            a_loc = np.sqrt(gamma * rspec * tv)
         blade_polys_m = _blade_polys_for_plot(job)
         def _fill_blades(ax_):
             _draw_metal(ax_, blade_polys_m)
@@ -706,9 +765,8 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         fig.savefig(fg)
         plt.close(fig)
         paths["contour_shock"] = str(fg)
-        if tvals and len(tvals) == len(cc):
-            Tv = np.array(tvals, dtype=float)
-            Ti = np.ma.filled(mtri.LinearTriInterpolator(triang, Tv)(X, Y), np.nan)
+        if tv is not None and len(tv) == n_field:
+            Ti = np.ma.filled(mtri.LinearTriInterpolator(triang, tv)(X, Y), np.nan)
             fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
             Ti = _mask_field_through_metal(X, Y, Ti, blade_polys_m)
             cf = ax.contourf(X, Y, np.ma.masked_invalid(Ti), levels=24, cmap="inferno")
@@ -732,8 +790,14 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         pv = _parse_of_scalar(case_dir / tname / "p")
         if not pv or len(pv) != len(cc):
             continue
+        pv_a = np.array(pv, dtype=float)
+        # Match stacked x,y length (Freeze B ×n_viz tile).
+        if len(pv_a) != len(x) and _n_viz > 1 and len(pv_a) * _n_viz == len(x):
+            pv_a = np.concatenate([pv_a] * _n_viz)
+        if len(pv_a) != len(x):
+            continue
         fig, ax = plt.subplots(figsize=(7, 3.6), dpi=90)
-        sc = ax.scatter(x, y, c=np.array(pv) / 1e5, s=5, cmap="coolwarm", linewidths=0, vmin=p.min()/1e5, vmax=p.max()/1e5)
+        sc = ax.scatter(x, y, c=pv_a / 1e5, s=5, cmap="coolwarm", linewidths=0, vmin=p.min()/1e5, vmax=p.max()/1e5)
         ax.set_aspect("equal")
         _crop_cascade_ax(ax, job)
         ax.set_title(f"p [bar] t={tname}")

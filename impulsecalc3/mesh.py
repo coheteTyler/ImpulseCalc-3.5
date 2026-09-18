@@ -79,6 +79,44 @@ def _xs_pack_hi(x_lo: float, x_hi: float, n: int, r: float) -> np.ndarray:
 
 
 
+def _pack_r_for_d0(L: float, nseg: int, d0: float, *, r_max: float = 1.25) -> float:
+    """Geometric pack ratio so first cell ≈ d0 over length L (nseg cells). Cap ≤ r_max."""
+    d0 = max(float(d0), 1e-12)
+    L = max(float(L), 1e-12)
+    nseg = max(int(nseg), 1)
+    if nseg <= 1:
+        return 1.0
+    target = d0 / L
+    # Uniform first cell = L/nseg; if already ≤ d0*1.05, no pack needed.
+    if L / nseg <= d0 * 1.05:
+        return 1.0
+    # d0/L = (r-1)/(r^n-1). Binary search r in [1.02, r_max].
+    lo, hi = 1.02, max(float(r_max), 1.02)
+    for _ in range(48):
+        mid = 0.5 * (lo + hi)
+        val = (mid - 1.0) / (mid ** nseg - 1.0)
+        if val > target:
+            lo = mid
+        else:
+            hi = mid
+    return float(min(0.5 * (lo + hi), float(r_max)))
+
+
+def _nseg_for_d0(L: float, d0: float, *, r_max: float = 1.25, n_max: int = 80) -> int:
+    """Min cell count so first cell ≈ d0 with growth ≤ r_max over length L."""
+    import math as _math
+    d0 = max(float(d0), 1e-12)
+    L = max(float(L), 1e-12)
+    r = max(float(r_max), 1.0 + 1e-9)
+    if L <= d0 * 1.01:
+        return 1
+    if abs(r - 1.0) < 1e-12:
+        n = int(_math.ceil(L / d0))
+    else:
+        n = int(_math.ceil(_math.log(max(1.0 + L * (r - 1.0) / d0, 1.0001)) / _math.log(r)))
+    return int(max(2, min(n, int(n_max))))
+
+
 def dump_xs_1c(
     x_te: float,
     chord: float,
@@ -89,44 +127,26 @@ def dump_xs_1c(
     L_dump_c: float = 1.0,
     L_near_c: float = 0.4,
 ) -> np.ndarray:
-    """Dump x-nodes: TE → ≥1.0c. First 0.4c ~8–12 cells at Δx≈TE wall; then stretch ≤1.25.
+    """Dump x-nodes: TE collar → ≥1.0c. First Δx ≈ dx_near, growth ≤ stretch_max (~1.25).
 
-    No hard Cartesian jump at TE — first Δx matches wall spacing, then grows.
+    Soft TE collar↔dump join: no chalk-line size cliff (neighbor ratio gate ~≤4).
+    ``n_near`` / ``L_near_c`` kept for API compat; sizing is geometric from dx_near.
     """
+    import math as _math
+    _ = n_near, L_near_c  # API compat; geometric law owns the near band now.
     c = max(float(chord), 1e-9)
     x_te = float(x_te)
-    x_out = x_te + max(float(L_dump_c), 1.0) * c
-    L_near = float(L_near_c) * c
-    x_near = x_te + L_near
-    dx = max(float(dx_near), 1e-8)
-    n_near = int(max(8, min(12, int(n_near))))
-    # Uniform-ish first band; nudge n so Δx ≈ dx_near without refining to LE spacing.
-    n_guess = max(8, min(12, int(round(L_near / dx))))
-    n_near = int(max(8, min(12, n_guess)))
-    xs_near = np.linspace(x_te, x_near, n_near + 1)
-    # Far band: geometric stretch from last near Δx, ratio ≤ stretch_max
-    L_far = x_out - x_near
-    dx0 = float(xs_near[-1] - xs_near[-2]) if n_near >= 1 else dx
-    r = min(float(stretch_max), 1.25)
-    if L_far <= 1.5 * dx0:
-        xs_far = np.array([x_near, x_out], dtype=float)
+    L = max(float(L_dump_c), 1.0) * c
+    x_out = x_te + L
+    dx0 = max(float(dx_near), 1e-9)
+    r = min(max(float(stretch_max), 1.0), 1.25)
+    if abs(r - 1.0) < 1e-12:
+        n = max(2, int(_math.ceil(L / dx0)))
     else:
-        # Find n_far such that sum dx0*r^k covers L_far with r≤1.25
-        n_far = 2
-        for n in range(2, 80):
-            if abs(r - 1.0) < 1e-12:
-                L = n * dx0
-            else:
-                L = dx0 * (r**n - 1.0) / (r - 1.0)
-            n_far = n
-            if L >= L_far * 0.98:
-                break
-        # Rebuild exactly onto [x_near, x_out] with that n and capped r
-        xs_far = np.array(
-            [x_near + L_far * _stretch(j, n_far, r) for j in range(n_far + 1)],
-            dtype=float,
-        )
-    xs = np.concatenate([xs_near[:-1], xs_far])
+        n = max(2, int(_math.ceil(_math.log(max(1.0 + L * (r - 1.0) / dx0, 1.0001)) / _math.log(r))))
+    n = min(n, 160)
+    # Place exactly on [x_te, x_out] so first Δx ≈ dx0 with growth r.
+    xs = np.array([x_te + L * _stretch(j, n, r) for j in range(n + 1)], dtype=float)
     xs[0] = x_te
     xs[-1] = x_out
     return xs
@@ -1758,15 +1778,21 @@ def build_offset_oh(
     pLt = cav_o[0]
     pRt = cav_o[-1]
 
-    r_in = _inlet_pack_r(n_in, r_inlet)
-    # Shared cyclic x like the original writer: join at the cavity tips so
-    # sw/nw use xs_w and south/north use the inner-offset x's (same count).
+    # Soft red joins: H first cell tracks O outer Δn (growth ≤~1.25, neighbor ratio ~≤4).
+    dn_o = float(np.mean(np.linalg.norm(ogrid[:, -1, :] - ogrid[:, -2, :], axis=1)))
+    dn_o = max(dn_o, 1e-9)
     x_join_w = float(pSW[0])
     x_join_e = float(pSE[0])
+    L_in = max(float(x_join_w) - float(x_in), 1e-9)
+    # Prefer inlet_stretch but retarget so LE Δx ≈ dn_o (soft LE collar↔passage H).
+    r_in = _pack_r_for_d0(L_in, n_in, dn_o, r_max=min(1.25, max(float(r_inlet), 1.02)))
+    if r_in <= 1.0 + 1e-12:
+        r_in = _inlet_pack_r(n_in, r_inlet)
     xs_w = _xs_pack_hi(x_in, x_join_w, n_in, r_in)
+    dx_le = float(xs_w[-1] - xs_w[-2]) if len(xs_w) >= 2 else L_in
     notes.append(
-        f"inlet H axial pack toward LE (inlet_stretch={r_inlet:.3g}→{r_in:.3g}, n_inlet={n_in}); "
-        "Δx smaller near LE join than at x_in"
+        f"inlet H axial pack toward LE (r={r_in:.3g}, n_inlet={n_in}); "
+        f"LE Δx={dx_le*1e6:.2f} um / dn_o={dn_o*1e6:.2f} um ratio={dx_le/dn_o:.2f}"
     )
     # TE collar x — dump starts here (open-O outer / east stem), NOT a full-pitch
     # vertical AABB east wall at x_TE (that hard O→Cartesian cliff fakes Δp).
@@ -1779,8 +1805,8 @@ def build_offset_oh(
         float(pNE[0]),
         float(te_o[0]),
     )
-    fc = float(np.mean(np.linalg.norm(ogrid[:, 1, :] - ogrid[:, 0, :], axis=1)))
-    dx_near = min(max(fc, 1e-8), 0.05 * c_use)
+    # Dump first Δx = O outer Δn (soft TE collar↔dump), NOT wall first-cell.
+    dx_near = min(max(dn_o, 1e-9), 0.05 * c_use)
     if dump_xs is not None:
         xs_dump = np.asarray(dump_xs, dtype=float).copy()
         xs_dump = xs_dump - float(xs_dump[0]) + float(x_te_col)
@@ -1820,6 +1846,23 @@ def build_offset_oh(
     y_nw = float(pNW[1])
     y_ne = float(pNE[1])
     # Mid cyclic x = north O x's so N/S cyclics pair 1:1 with no fan.
+    # Graded buffer: pack passage H toward O so first H cell ≈ dn_o (soft red joins).
+    gap_s = float(max(float(np.min(south_o[:, 1])) - float(y_bot), 1e-9))
+    gap_n = float(max(float(y_top) - float(np.max(north_o[:, 1])), 1e-9))
+    # Repair: do NOT bump n_fill_h (changes H–H corner topology → leftover faces).
+    # Pack within existing n_fill so first H cell tracks dn_o as far as r≤1.25 allows.
+    r_south = _pack_r_for_d0(gap_s, n_fill_h, dn_o, r_max=1.25)
+    # North pack_r>1 leaves 80 unclassified faces (nw TFI/smooth drifts from
+    # north west edge). Keep r_north=1 until nw edge-pin is proven; south is OK.
+    r_north = 1.0
+    dy_s = gap_s * (r_south - 1.0) / (r_south ** max(n_fill_h, 1) - 1.0) if r_south > 1.0 + 1e-12 else gap_s / max(n_fill_h, 1)
+    dy_n = gap_n / max(n_fill_h, 1)
+    notes.append(
+        f"soft H↔O joins: dn_o={dn_o*1e6:.2f} um n_fill={n_fill_h} "
+        f"r_s={r_south:.3g} r_n={r_north:.3g}(pinned) "
+        f"firstΔy_s/dn_o={dy_s/dn_o:.2f} firstΔy_n/dn_o={dy_n/dn_o:.2f} "
+        f"gap_s={gap_s*1e3:.3f} mm gap_n={gap_n*1e3:.3f} mm"
+    )
     h_west = _pos_block(
         _ray_block_horizontal(
             x_in, west_s2n[:, 0], west_s2n[:, 1], n_in, pack_r=r_in, dense_at="hi"
@@ -1829,7 +1872,7 @@ def build_offset_oh(
     )
     h_south = _pos_block(
         _ray_block_vertical(
-            y_bot, south_o[:, 1], south_o[:, 0], n_fill_h, pack_r=1.0, dense_at="hi"
+            y_bot, south_o[:, 1], south_o[:, 0], n_fill_h, pack_r=r_south, dense_at="hi"
         ),
         "south",
         keep_edges=True,
@@ -1843,10 +1886,25 @@ def build_offset_oh(
         )
     h_n_raw = np.zeros((xs_s.shape[0], n_fill_h + 1, 2), dtype=float)
     for _i in range(xs_s.shape[0]):
-        h_n_raw[_i] = _lin_pack_start(north_o[_i], north_top[_i], n_fill_h, 1.0)
+        h_n_raw[_i] = _lin_pack_start(north_o[_i], north_top[_i], n_fill_h, r_north)
+    # Pin edges before/after smooth — packed O interface must stay conformal
+    # (smooth drifting edges → duplicate boundary faces → leftover≠0).
+    _e0 = h_n_raw[:, 0, :].copy()
+    _e1 = h_n_raw[:, -1, :].copy()
+    _ew = h_n_raw[0, :, :].copy()
+    _ee = h_n_raw[-1, :, :].copy()
     sm = smooth_rect_block(h_n_raw, n_iter=80, omega=0.45)
     if min_cell_area_2d_rect(sm) > 0:
         h_n_raw = sm
+        h_n_raw[:, 0, :] = _e0
+        h_n_raw[:, -1, :] = _e1
+        h_n_raw[0, :, :] = _ew
+        h_n_raw[-1, :, :] = _ee
+        # re-pin corners after side restores
+        h_n_raw[0, 0, :] = _e0[0]
+        h_n_raw[-1, 0, :] = _e0[-1]
+        h_n_raw[0, -1, :] = _e1[0]
+        h_n_raw[-1, -1, :] = _e1[-1]
     h_north = _pos_block(h_n_raw, "north", keep_edges=True)
 
     west_s = h_west[:, 0, :]
@@ -1870,9 +1928,15 @@ def build_offset_oh(
     nw_east = _lin(west_n[-1], nw_north[-1], north_w.shape[0] - 1)
     nw_west = _lin(west_n[0], nw_north[0], north_w.shape[0] - 1)
     h_nw_raw = tfi_block(west_n, nw_north, nw_west, nw_east)
+    _n0 = h_nw_raw[:, 0, :].copy(); _n1 = h_nw_raw[:, -1, :].copy()
+    _nw = h_nw_raw[0, :, :].copy(); _ne = h_nw_raw[-1, :, :].copy()
     sm = smooth_rect_block(h_nw_raw, n_iter=80, omega=0.45)
     if min_cell_area_2d_rect(sm) > 0:
         h_nw_raw = sm
+        h_nw_raw[:, 0, :] = _n0; h_nw_raw[:, -1, :] = _n1
+        h_nw_raw[0, :, :] = _nw; h_nw_raw[-1, :, :] = _ne
+        h_nw_raw[0, 0, :] = _n0[0]; h_nw_raw[-1, 0, :] = _n0[-1]
+        h_nw_raw[0, -1, :] = _n1[0]; h_nw_raw[-1, -1, :] = _n1[-1]
     h_nw = _pos_block(h_nw_raw, "nw", keep_edges=True)
 
     # Dump west = south H east + O east stem + north H east (collar silhouette).
@@ -1891,8 +1955,9 @@ def build_offset_oh(
     ]
     h_blocks = [h_te_wake, *h_rest]
     notes.append(
-        "H-blocks: vertical rays cavity+south and back→y_top; inlet stems horizontal; "
-        "dump from TE collar silhouette (open-O east stem) with dump_xs_1c packing. "
+        "H-blocks: vertical rays cavity+south and back→y_top (pack→O, growth≤1.25); "
+        "inlet stems horizontal (pack→LE); dump from TE collar silhouette with "
+        "dump_xs_1c first_Δx≈dn_o. Soft red joins — no chalk-line size cliffs. "
         "No h_east→x_cart AABB east wall / Cartesian cliff at TE."
     )
     notes.append("H TE nodes snapped to wake chord (unkinked).")
@@ -2853,8 +2918,14 @@ def build_body_fitted_oh_shock(
     rx = max(float(dump_rx), 1.0 + 1e-9)
     dx_last = max(float(dump_dx_last), 1e-6)
     x_te = max(p[0] for p in poly0)
-    # dump_xs_1c from TE (no Cartesian cliff at x_TE+0.2 mm). Length ≥ max(1c, wake_cx*c).
-    dx0 = max(20e-6, 0.0015 * c)
+    # dump_xs_1c from TE (no Cartesian cliff). First Δx ≈ O outer Δn estimate.
+    # build_offset_oh retargets to measured dn_o; this seed must not chalk-line.
+    dn_est = float(d_o) * (r_wall - 1.0) * (r_wall ** max(int(n_rad) - 1, 0)) / max(
+        (r_wall ** max(int(n_rad), 1) - 1.0), 1e-12
+    ) if r_wall > 1.0 + 1e-12 else float(d_o) / max(int(n_rad), 1)
+    if y1_m is not None and float(y1_m) > 0:
+        dn_est = max(dn_est, float(y1_m) * (r_wall ** max(int(n_rad) - 1, 0)))
+    dx0 = max(float(dn_est), 1e-9)
     L_c = max(1.0, float(wake_cx), (float(x_out) - float(x_te)) / c)
     xs_full = dump_xs_1c(
         float(x_te), c, dx0, n_near=10, stretch_max=min(1.25, float(rx)), L_dump_c=L_c
@@ -3199,23 +3270,34 @@ def write_polymesh(
             rho1_kg_m3=float(gas.get("rho1_kg_m3") or gas.get("rho1") or 1.0),
             w1_m_s=float(gas.get("w1_m_s") or 1.0),
             yplus_target=float(cfd.get("yplus_target") or 1.0),
+            u_tau_frac_w1=float(cfd.get("u_tau_frac_w1") or 0.05),
         )
         shock_metrics["y1_m"] = y1
         shock_metrics["u_tau"] = u_tau
         shock_metrics["y1_note"] = y1_note
-        r_use = max(float(stretch), 1.12)
-        n_rad = max(int(n_rad), 20)
-        cfd["n_radial"] = n_rad
-        d_o_req = d_o_from_y1(y1, n_rad, r_use)
+        # Restore real wall inflation: y1 from yplus_target, n_rad∈[15,25], growth≤1.25.
+        r_use = min(max(float(stretch), 1.05), 1.25)
+        n_rad = int(n_rad) if int(n_rad) > 0 else 20
+        n_rad = max(15, min(25, n_rad))
         d_cap = min(
             0.28 * max(float(gap0["g_min"]), 1e-6),
             0.45 * max(clearance_y, 2e-6),
             0.06 * spec.chord_m,
             0.00045,
         )
+        # Prefer keeping y1: shrink n_rad before crushing first-cell below target.
+        d_o_req = d_o_from_y1(y1, n_rad, r_use)
+        while n_rad > 15 and d_o_req > d_cap * 1.001:
+            n_rad -= 1
+            d_o_req = d_o_from_y1(y1, n_rad, r_use)
         d_o = min(d_o_req, d_cap)
         stretch = r_use
+        cfd["n_radial"] = n_rad
+        cfd["stretch"] = stretch
         shock_metrics["n_radial"] = n_rad
+        shock_metrics["stretch"] = stretch
+        shock_metrics["d_o_m"] = d_o
+        shock_metrics["d_o_req_m"] = d_o_req
         beta1 = float(g.get("beta1_flow_deg") or 65.0)
         beta2 = float(g.get("beta2_flow_deg") or -65.0)
         n_pw = int(cfd.get("n_pitchwise_throat") or max(n_fill, 40))
@@ -3257,6 +3339,19 @@ def write_polymesh(
         x_out = float(hy.get("x_out") or x_out)
         shock_metrics.update(hy.get("metrics") or {})
         shock_metrics["yplus_target"] = float(cfd.get("yplus_target") or 1.0)
+        # Prove first-cell on metal (O j=0) tracks y1 within 2× (inflation restored).
+        if y1 > 0 and first_cell > 0:
+            ratio_fc = float(first_cell) / float(y1)
+            shock_metrics["first_cell_over_y1"] = ratio_fc
+            oh_notes.append(
+                f"inflation: first_cell={first_cell:.3g} m y1={y1:.3g} m "
+                f"ratio={ratio_fc:.3g} n_rad={n_rad} stretch={stretch:.3g} d_o={d_o:.3g} m "
+                f"(first cell on metal O j=0)"
+            )
+            if ratio_fc > 2.5 or ratio_fc < 0.35:
+                oh_notes.append(
+                    f"WARN first_cell/y1={ratio_fc:.3g} outside ~[0.35,2.5] — inflation soft"
+                )
         n_quad_cells = int(n_i * n_rad)
         for hb in h_blocks:
             n_quad_cells += int((hb.shape[0] - 1) * (hb.shape[1] - 1))

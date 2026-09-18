@@ -86,6 +86,8 @@ def field_png(
     cbar: str,
     blade_polys: list | None = None,
     xlim_m: tuple[float, float] | None = None,
+    pitch_m: float | None = None,
+    n_viz: int = 1,
 ) -> Path | None:
     if cc.size == 0 or values.size == 0:
         return None
@@ -93,13 +95,32 @@ def field_png(
     fig, ax = plt.subplots(figsize=(9.0, 4.6), dpi=130)
     x = cc[:, 0] * 1000.0
     y = cc[:, 1] * 1000.0
-    sc = ax.scatter(x, y, c=values, s=6, cmap="coolwarm", linewidths=0)
+    vals = np.asarray(values, dtype=float)
+    # Freeze B: tile ×n_viz in y like mesh wires / Fields contours.
+    nv = max(int(n_viz or 1), 1)
+    if nv > 1 and pitch_m is not None and float(pitch_m) > 0:
+        pmm = float(pitch_m) * 1000.0
+        xs = [x]
+        ys = [y]
+        vs = [vals]
+        for k in range(1, nv):
+            xs.append(x)
+            ys.append(y + k * pmm)
+            vs.append(vals)
+        x = np.concatenate(xs)
+        y = np.concatenate(ys)
+        vals = np.concatenate(vs)
+    sc = ax.scatter(x, y, c=vals, s=6, cmap="coolwarm", linewidths=0)
     fig.colorbar(sc, ax=ax, label=cbar, shrink=0.85)
     if blade_polys:
-        # Opaque metal fill from the same mesh blade polys (never contour through solid).
-        for poly in blade_polys:
-            xs = [p[0] * 1000 for p in poly]
-            ys = [p[1] * 1000 for p in poly]
+        # Opaque metal fill; tile ×n_viz when live mesh is 1-pitch (Freeze B).
+        polys = list(blade_polys)
+        if nv > 1 and pitch_m is not None and float(pitch_m) > 0 and len(polys) == 1:
+            base = polys[0]
+            polys = [[(pt[0], pt[1] + k * float(pitch_m)) for pt in base] for k in range(nv)]
+        for poly in polys:
+            xs = [pt[0] * 1000 for pt in poly]
+            ys = [pt[1] * 1000 for pt in poly]
             ax.fill(xs, ys, facecolor="#c8c8c8", edgecolor="#222", lw=0.7, zorder=5)
     ax.set_aspect("equal")
     ax.set_xlabel("x axial [mm]")
