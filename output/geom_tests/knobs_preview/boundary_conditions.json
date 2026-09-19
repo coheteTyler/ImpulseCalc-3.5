@@ -1,0 +1,24 @@
+{
+  "inlet_U": "fixedValue relative W from job \u03b21: (W*cos(\u03b21\u00b0), W*sin(\u03b21\u00b0), 0) \u2014 \u03b21 is Inputs knob, not hardcoded",
+  "outlet_U": "inletOutlet inletValue (0 0 0) \u2014 not W1, not a second stator",
+  "inlet_bc": "static_rel",
+  "inlet_p_static": 550000.0,
+  "inlet_pt_rel": 1690756.0524285587,
+  "inlet_p": 550000.0,
+  "inlet_T": 1100.0,
+  "outlet_p": "waveTransmissive",
+  "outlet_p_fieldInf": 550000.0,
+  "outlet_p_NOT": "0.95 p1",
+  "blades": "noSlip on blade0..blade0 (live 1-pitch; viz stacks \u00d73)",
+  "frontAndBack": "empty",
+  "top_bottom": "cyclic translational full pitch strip incl. x<LE (classic cascade)",
+  "duct_walls": false,
+  "turbulence": "laminar",
+  "predicted": true,
+  "foam_t_end_s": 2.5e-05,
+  "inlet_U_components": {
+    "wx": 293.56614,
+    "wy": 903.50369,
+    "implied_beta1_deg": 72.00000025812406
+  }
+}

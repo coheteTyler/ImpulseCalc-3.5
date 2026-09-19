@@ -3678,15 +3678,11 @@ def write_polymesh(
 
     tol = 1e-8
     blade_names = [f"blade{k}" for k in range(n_blades)]
-    # Post-stator inlet duct (x <= x_LE): constraining walls on pitch lids.
-    # Cascade + dump (x >= x_LE): translational cyclics only (Freeze B infinite row).
-    x_le_split = None
-    if blade_polys and passage is None:
-        x_le_split = float(min(p[0] for bp in blade_polys for p in bp))
+    # Classic cascade: translational cyclics on the FULL pitch strip (including x < LE).
+    # No ductBottom/ductTop horizontal lids (those straightened the β1 jet).
 
     buckets: dict[str, list[tuple[list[int], int, tuple[float, float, float]]]] = {
         "inlet": [], "outlet": [], "bottom": [], "top": [],
-        "ductBottom": [], "ductTop": [],
         "frontAndBack": [], **{n: [] for n in blade_names},
     }
     unclassified = 0
@@ -3727,15 +3723,9 @@ def write_polymesh(
             else:
                 unclassified += 1
         elif (passage is None) and abs(y - y_min) < 1e-7:
-            if x_le_split is not None and x <= x_le_split + 1e-12:
-                buckets["ductBottom"].append((fverts, owner, c))
-            else:
-                buckets["bottom"].append((fverts, owner, c))
+            buckets["bottom"].append((fverts, owner, c))
         elif (passage is None) and abs(y - y_max) < 1e-7:
-            if x_le_split is not None and x <= x_le_split + 1e-12:
-                buckets["ductTop"].append((fverts, owner, c))
-            else:
-                buckets["top"].append((fverts, owner, c))
+            buckets["top"].append((fverts, owner, c))
         else:
             if passage is not None:
                 ymid = 0.5 * (passage.y_min + passage.y_max)
@@ -3752,12 +3742,6 @@ def write_polymesh(
             raise RuntimeError(
                 f"cyclic face count mismatch bottom={len(buckets['bottom'])} top={len(buckets['top'])}"
             )
-    # Duct lid walls need not match each other; empty duct lid on one side only is a topology bug.
-    if bool(buckets["ductBottom"]) != bool(buckets["ductTop"]):
-        raise RuntimeError(
-            f"duct lid wall imbalance ductBottom={len(buckets['ductBottom'])} "
-            f"ductTop={len(buckets['ductTop'])} (x_LE split leftover — FAIL)"
-        )
 
     buckets["bottom"].sort(key=lambda t: (round(t[2][0], 9), round(t[2][2], 9)))
     buckets["top"].sort(key=lambda t: (round(t[2][0], 9), round(t[2][2], 9)))
@@ -3798,8 +3782,6 @@ def write_polymesh(
         ]
 
     patch_order = ["inlet", "outlet"]
-    if buckets["ductBottom"] or buckets["ductTop"]:
-        patch_order.extend(["ductBottom", "ductTop"])
     if buckets["bottom"] or buckets["top"]:
         patch_order.extend(["bottom", "top"])
     patch_order.extend(["frontAndBack", *blade_names])
@@ -3853,7 +3835,7 @@ def write_polymesh(
         elif name == "frontAndBack":
             ptype = "empty"
             extra = "        inGroups        1(empty);\n"
-        elif name.startswith("blade") or name in ("ductBottom", "ductTop"):
+        elif name.startswith("blade"):
             ptype = "wall"
             extra = "        inGroups        1(wall);\n"
         else:
@@ -3896,16 +3878,10 @@ def write_polymesh(
         f"n_cells={n_cells} first_cell≈{first_cell:.3g} m d_o={d_o:.3g} m min O-quad {a2:.3e} m2",
         f"y_shift to centre blade in pitch: {y_shift:.6g} m (rigid; metal angles unchanged).",
         "Wall faces tagged from the O-grid j=0 ring (per-blade patches).",
-        *(
-            [
-                f"post-stator inlet duct: ductBottom/ductTop noSlip walls for x<=x_LE={x_le_split:.6g} m; "
-                f"cascade+dump cyclics bottom/top for x>=x_LE "
-                f"(cyclic nFaces={len(buckets['bottom'])}/{len(buckets['top'])}, "
-                f"duct nFaces={len(buckets['ductBottom'])}/{len(buckets['ductTop'])}). "
-                "Not open freestream wrapping the duct."
-            ]
-            if x_le_split is not None and (buckets["ductBottom"] or buckets["ductTop"])
-            else []
+        (
+            f"classic cascade cyclics: full pitch strip bottom/top translational "
+            f"(incl. x < LE); nFaces={len(buckets['bottom'])}/{len(buckets['top'])}. "
+            "No ductBottom/ductTop lids."
         ),
         *oh_notes,
         *([job["_hoh_fallback"]] if job.get("_hoh_fallback") else []),

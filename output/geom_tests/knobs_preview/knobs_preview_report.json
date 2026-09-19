@@ -1,18 +1,549 @@
 {
-  "success": false,
+  "app": "ImpulseCalc3",
+  "name": "knobs_preview_staging",
+  "article": "KNOBS PREVIEW \u2014 geometry test. Engineering aid, not a flight certificate. Not Marlin V2 live tree. Gas unsigned. PREDICTED is not a design load.",
+  "success": true,
   "predicted": true,
+  "predicted_reason": "GEOMETRY TEST. Gas unsigned; isolate metal. Not Marlin V2. Photo is not the signed table.",
+  "flags": {
+    "mesh_ok": true,
+    "solve_ok": true,
+    "sample_on_wall": true,
+    "force_plateau": false,
+    "force_climbing": true,
+    "newtons_trusted": false,
+    "eta_from_cfd": false,
+    "synthetic": false,
+    "predicted": true
+  },
+  "errors": [],
+  "times": {
+    "t_end_s": 2.5e-05,
+    "t_end_floor_s": 7.894020486454254e-05,
+    "t_chord_convective_s": 1.0526315789473684e-05,
+    "t_chord_acoustic_s": 1.4782809899727065e-05,
+    "t_domain_acoustic_s": 6.578350405378545e-05,
+    "t_reached_s": 2.5e-05,
+    "n_chords": 2.375,
+    "n_chords_min": 5.0,
+    "Mw1": 1.4043669404740713,
+    "notes": [
+      "a = sqrt(\u03b3 R T1) = sqrt(1.3 * 320.0 * 1100.0) = 676.5 m/s",
+      "t_chord_convective = c/W1 = 0.01/950.0 = 1.05263e-05 s",
+      "t_chord_acoustic = c/a = 1.47828e-05 s",
+      "t_domain_acoustic = Lx/a = 0.0445/676.5 = 6.57835e-05 s",
+      "endTime floor = max(5.0*c/W1, 1.2*Lx/a) = max(5.26316e-05, 7.89402e-05) = 7.89402e-05 s  (never 2e-6 s)",
+      "Mw1 = W1/a = 1.404"
+    ]
+  },
+  "mesh": {
+    "kind": "body_fitted_OH",
+    "n_cells": 12934,
+    "n_points": 26434,
+    "n_around": 147,
+    "n_radial": 20,
+    "first_cell_m": 6.063157894735101e-07,
+    "min_area_2d": 1.4500580455573527e-11,
+    "z_thick_m": 0.001,
+    "patches": {
+      "inlet": 94,
+      "outlet": 98,
+      "bottom": 113,
+      "top": 113,
+      "frontAndBack": 25868,
+      "blade0": 148
+    },
+    "notes": [
+      "mesh: body-fitted O-grid on the metal + Cartesian H-blocks to the pitch rectangle.",
+      "NOT Cartesian subsetMesh stair-step.",
+      "1 blade(s) in polyMesh (viz_stack=3), cyclic period=0.00811392 m (=1\u00d7pitch), empty frontAndBack, slab 0.001 m.",
+      "O n_around=147 (JSON n_around=56; S/N=n_cyclic=16 E=n_outlet=14 W=n_inlet=14) n_radial=20",
+      "n_cells=12934 first_cell\u22486.06e-07 m d_o=4.37e-05 m min O-quad 1.450e-11 m2",
+      "y_shift to centre blade in pitch: -0.00265805 m (rigid; metal angles unchanged).",
+      "Wall faces tagged from the O-grid j=0 ring (per-blade patches).",
+      "classic cascade cyclics: full pitch strip bottom/top translational (incl. x < LE); nFaces=113/113. No ductBottom/ductTop lids.",
+      "U-cavity depth 1.10 mm / y-span 4.77 mm; axis-aligned H (vertical cavity/back, horizontal stems) + offset collar",
+      "streamwise LE cluster le_cluster=2.5 on wall/offset arcs (\u0394s biased to min-x per arc; O wall-normal stretch unchanged)",
+      "O outer = offset_closed(inner) \u2014 wall-normal 1:1 O\u2013H node match",
+      "OH corners 45\u00b0: kSE=6 kE=69 kW=210 kSW=273 n_inner=40 n_north=58 n_west=14 n_east=18",
+      "H-O-H TE wake: open O, TE projected to cut chord (unkink 66 um), cut wall sep=0.4955 mm",
+      "inlet H axial pack toward LE (r=1.12, n_inlet=14); LE \u0394x=297.56 um / dn_o=5.22 um ratio=56.98",
+      "dump xs from TE collar n=41 L=25.06 mm first_\u0394x=0.0051 mm last_\u0394x=3.826 mm",
+      "soft H\u2194O joins: dn_o=5.22 um n_fill=40 r_s=1.09 r_n=1(pinned) first\u0394y_s/dn_o=1.00 first\u0394y_n/dn_o=8.00 gap_s=1.672 mm gap_n=1.672 mm",
+      "H-blocks: vertical rays cavity+south and back\u2192y_top (pack\u2192O, growth\u22641.25); inlet stems horizontal (pack\u2192LE); dump from TE collar silhouette with dump_xs_1c first_\u0394x\u2248dn_o. Soft red joins \u2014 no chalk-line size cliffs. No h_east\u2192x_cart AABB east wall / Cartesian cliff at TE.",
+      "H TE nodes snapped to wake chord (unkinked).",
+      "Cyclic x-nodes are shared top/bottom so 3-pitch stacking is conformal.",
+      "NOT subsetMesh stairs. NOT AABB morph across the cavity. NOT Gmsh.",
+      "TE collar dump: x_TE_col=0.00998649 x_out=0.0350429 n_dump=41",
+      "mesh_kind body_fitted_OH Goldman shock: conformal O + H; all quads; NOT hybrid_OH_tri.",
+      "inflation: first_cell=6.06e-07 m y1=6.06e-07 m ratio=1 n_rad=20 stretch=1.12 d_o=4.37e-05 m (first cell on metal O j=0)",
+      "body_fitted_OH child n_blades_cascade=1; stack_after_child_ok=False",
+      "HOH writer refuse \u2192 body_fitted_OH 1-pitch once: HOH hex volume <= 0 (min=-1.474e-08 n=29472 leftover=12). Refusing to write polyMesh.",
+      "geometry_test smoke: controlDict endTime patched to 2.5e-05 s (design floor 7.8940205e-05 s not required)"
+    ]
+  },
+  "checkMesh": {
+    "mesh_ok_strict": false,
+    "failed_checks": 1,
+    "open_cells": false,
+    "wrong_oriented_faces": 0,
+    "min_volume": 1.4500619e-14,
+    "max_volume": 1.0140657e-09,
+    "nonortho_max": 74.598518,
+    "nonortho_avg": 15.601411,
+    "skew_max": 2.207885,
+    "n_cells": 12934,
+    "n_hex": 12934,
+    "negative_volume": false,
+    "log_tail": "    \".*\"                26434    26434    ok (closed singly connected)      \n\n\nChecking faceZone topology for multiply connected surfaces...\n    No faceZones found.\n\nChecking basic cellZone addressing...\n    No cellZones found.\n\nChecking basic pointZone addressing...\n    No pointZones found.\n\nChecking geometry...\n    Overall domain bounding box (-0.0095 -0.0040569583 0) (0.035042935 0.0040569583 0.001)\n    Mesh has 2 geometric (non-empty/wedge) directions (1 1 0)\n    Mesh has 2 solution (non-empty) directions (1 1 0)\n    All edges aligned with or perpendicular to non-empty directions.\n    Boundary openness (1.1996472e-18 -1.3837597e-17 1.25242e-18) OK.\n    Max cell openness = 2.1110546e-14 OK.\n    Max aspect ratio = 541.8229 OK.\n    Minimum face area = 1.4500619e-11. Maximum face area = 4.039939e-06.  Face area magnitudes OK.\n    Min volume = 1.4500619e-14. Max volume = 1.0140657e-09.  Total volume = 3.3203993e-07.  Cell volumes OK.\n    Mesh non-orthogonality Max: 74.598518 average: 15.601411\n   *Number of severely non-orthogonal (> 70 degrees) faces: 14.\n    Non-orthogonality check OK.\n  <<Writing 14 non-orthogonal faces to set nonOrthoFaces\n    Face pyramids OK.\n    Max skewness = 2.207885 OK.\n    Coupled point location match (average 1e-10) OK.\nChecking faces in error :\n    non-orthogonality > 70  degrees                        : 14\n    faces with concavity > 80  degrees                     : 0\n    faces with skewness > 50  (internal) or 50  (boundary) : 0\n  <<Writing 14 faces in error to set meshQualityFaces\n\nFailed 1 mesh checks.\n\nEnd\n\n# docker volume: /var/lib/docker/overlay2/ee16516b3f75cf7a7360116a501793202076672b3e863b1d5ee95eace1f76fb3/merged/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging:/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging",
+    "rc": 0,
+    "log": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging/log.checkMesh",
+    "kind": "body_fitted_OH",
+    "note": "checkMesh failed 1 quality checks; Cell volumes OK \u2014 foam allowed (Track A)"
+  },
+  "solve": {
+    "rc": 0,
+    "log": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging/log.rhoCentralFoam",
+    "end_seen": true,
+    "fatal": false
+  },
+  "wall": {
+    "on_wall": true,
+    "success": true,
+    "p1_pa": 550000.0,
+    "t0_mean_p": 550000.0,
+    "mean_p": 576930.4614189189,
+    "mean_p_over_p1": 1.0489644753071252,
+    "q_dyn_pa": 705078.125,
+    "parser": "header-aware p column, never T",
+    "notes": [
+      "blade0: 148 wall points from p_blade0Wall.raw, mean p=576930 Pa"
+    ],
+    "error": null,
+    "n_points": [
+      148
+    ]
+  },
+  "yplus": {
+    "source": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging/postProcessing/yPlus1/0/yPlus.dat",
+    "min": 0.0302028764,
+    "max": 1.80306049,
+    "average": 0.3491255,
+    "time_s": 2.5e-05
+  },
+  "forces": {
+    "predicted": true,
+    "climbing": true,
+    "plateau": false,
+    "trusted": false,
+    "frame": {
+      "x": "axial / drag Fd",
+      "y": "tangential Ft",
+      "z": "empty span"
+    },
+    "scale": 5.0,
+    "z_thick_m": 0.001,
+    "span_m": 0.005,
+    "source": "openfoam_forces_fo",
+    "blades": [
+      {
+        "blade_index": 0,
+        "patch": "blade0",
+        "Ft_N": 25.42882055,
+        "Fd_N": 1.033736425,
+        "Ft_N_per_m": 5085.76411,
+        "Fd_N_per_m": 206.747285,
+        "Ft_pressure_N": 25.3401472,
+        "Fd_pressure_N": 0.8570562449999999,
+        "Ft_viscous_N": 0.0886733525,
+        "Fd_viscous_N": 0.17668018349999998,
+        "viscous_included": true,
+        "span_m": 0.005,
+        "source": "openfoam_forces_fo",
+        "trusted": false,
+        "predicted": true,
+        "climbing": true
+      }
+    ],
+    "notes": [
+      "Ft=Fy tangential, Fd=Fx axial, relative cascade chord frame.",
+      "Scale OF slab 0.001 m \u2192 span 0.005 m. Per-blade patches, not total/n.",
+      "PREDICTED until ORBIT signs the GG-to-rotor station (and until plateau).",
+      "Force still climbing at endTime. Do not treat as a design load."
+    ],
+    "plateau_check": {
+      "plateau": false,
+      "climbing": true,
+      "dFt_over_Ft": 2.517869364960197,
+      "dFt_dt": -168700.01862953312,
+      "window_s": 1.0526297000000001e-05,
+      "Ft_window_mean": 13.056845524835124
+    },
+    "viscous_included": true
+  },
+  "outlet": {
+    "type": "waveTransmissive",
+    "fieldInf": 550000.0,
+    "NOT": "0.95 p1",
+    "measured_mean_p": 536068.0792857143,
+    "measured_over_p1": 0.9746692350649351
+  },
+  "meanline": {
+    "predicted": true,
+    "euler_work_j_kg": 813153.3214323564,
+    "power_w": 439419.7534616818,
+    "u_m_s": 450.0,
+    "ainley_mathieson": {
+      "book": "Ainley-Mathieson-1951",
+      "predicted": true,
+      "s_over_c": 0.8113916665963448,
+      "Yp_nozzle_chart": 0.038670008270293814,
+      "Yp_impulse_chart": 0.07290175240358422,
+      "Yp_profile": 0.055785880336939014,
+      "note": "PREDICTED profile-loss coefficient from the named AM 1951 book. Not from CFD. Not a stage efficiency. Not Kacker-Okapuu unless a later ticket adds that book as a second named comparison."
+    },
+    "loss_scoping": {
+      "authority": "SCOPING",
+      "predicted": true,
+      "ko_available": false,
+      "profile": {
+        "Yp": 0.055785880336939014,
+        "book": "Ainley-Mathieson-1951 placeholder",
+        "predicted": true
+      },
+      "shock": {
+        "status": "not_implemented",
+        "note": "Kacker-Okapuu shock term not wired"
+      },
+      "tip_secondary": {
+        "status": "not_implemented",
+        "note": "unshrouded tip / secondary \u2014 no KO yet"
+      },
+      "friction": {
+        "status": "not_implemented",
+        "note": "skin friction not a second \u03b7"
+      },
+      "leading_edge": {
+        "status": "not_implemented",
+        "note": "LE loss not a NACA chart ingest"
+      },
+      "note": "Column A (safety). OpenFOAM is column B. Do not paint this as FIELD_CFD."
+    },
+    "Mw1": 1.4043669404740713,
+    "Re_c": 329861.11111111107,
+    "wx1": 293.5661446562001,
+    "wy1": 903.5036904803959,
+    "notes": [
+      "Relative cascade: inlet W1 at flow \u03b21. U is for triangles/Euler only.",
+      "Metal \u03b2* = flow \u03b2 \u2212 i / + \u03b4. Geometry uses metal. i=\u03b4=0 \u21d2 \u03b2*=\u03b2.",
+      "Euler work U(C\u03b81\u2212C\u03b82) from the PREDICTED triangle. Not from CFD.",
+      "Ainley\u2013Mathieson Yp is a named loss-book placeholder. PREDICTED.",
+      "2D CFD must not invent stage efficiency.",
+      "W1/U/p1/T1/gas are PREDICTED until ORBIT signs a GG-to-rotor station.",
+      "Pc of the TCA is not the cascade inlet.",
+      "\u1e41_gg is a cycle-card number, not a cascade inlet BC.",
+      "Goldman designer (if used) takes \u03b3 and Mw1 only \u2014 not U, \u1e41, or OF."
+    ],
+    "eta_from_cfd": null
+  },
+  "euler_work_j_kg": 813153.3214323564,
+  "power_w": 439419.7534616818,
+  "u_m_s": 450.0,
+  "Mw1": 1.4043669404740713,
+  "loss_scoping": {
+    "authority": "SCOPING",
+    "predicted": true,
+    "ko_available": false,
+    "profile": {
+      "Yp": 0.055785880336939014,
+      "book": "Ainley-Mathieson-1951 placeholder",
+      "predicted": true
+    },
+    "shock": {
+      "status": "not_implemented",
+      "note": "Kacker-Okapuu shock term not wired"
+    },
+    "tip_secondary": {
+      "status": "not_implemented",
+      "note": "unshrouded tip / secondary \u2014 no KO yet"
+    },
+    "friction": {
+      "status": "not_implemented",
+      "note": "skin friction not a second \u03b7"
+    },
+    "leading_edge": {
+      "status": "not_implemented",
+      "note": "LE loss not a NACA chart ingest"
+    },
+    "note": "Column A (safety). OpenFOAM is column B. Do not paint this as FIELD_CFD."
+  },
+  "eta_from_cfd": null,
+  "gas": {
+    "p1_pa": 550000.0,
+    "t1_k": 1100.0,
+    "w1_m_s": 950.0,
+    "predicted": true,
+    "note": "PREDICTED station knobs. Not signed GG-to-rotor. U from rpm*rm when rpm set. Not FIELD_CFD."
+  },
+  "engine_note": "GEOMETRY TEST. Pc is chamber pressure and is NOT the cascade inlet. This JSON is not Marlin V2 and does not claim the wheel photo is the signed V2 table.",
+  "viz": {
+    "pngs": [
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/p_latest.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/Umag_latest.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/p_0.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/Umag_0.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/p_2p5em05.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/Umag_2p5em05.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/wall_cp_blade0.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/ft_history.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging/mesh_preview.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/force_history.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/wall_cp_blade0.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_p.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_U.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_stream.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_M.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_shock.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_T.png"
+    ],
+    "note": "matplotlib from real OF time dirs; no fake encoder",
+    "sequence": [
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/p_0.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/Umag_0.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/p_2p5em05.png",
+      "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/seq/Umag_2p5em05.png"
+    ],
+    "post_plots": {
+      "force_history": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/force_history.png",
+      "wall_cp": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/wall_cp_blade0.png",
+      "wall_p_csv": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/wall_p_blade0.csv",
+      "contour_p": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_p.png",
+      "contour_U": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_U.png",
+      "contour_stream": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_stream.png",
+      "contour_M": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_M.png",
+      "contour_shock": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_shock.png",
+      "contour_T": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/contour_T.png",
+      "p_sequence_dir": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/plots/p_sequence"
+    }
+  },
+  "case_dir": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging",
+  "report_path": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/knobs_preview_staging_report.json",
+  "geometry_test": true,
   "t_end_s": 2.5e-05,
-  "n_cells": 12934,
-  "vol_ok": true,
-  "leftover": 0,
-  "duct_walls": true,
-  "cyclic_nFaces": {
-    "bottom": 99,
-    "top": 99
+  "t_chord_convective_s": 1.0526315789473684e-05,
+  "sample": {
+    "on_wall": true,
+    "success": true,
+    "p1_pa": 550000.0,
+    "t0_mean_p": 550000.0,
+    "mean_p": 576930.4614189189,
+    "mean_p_over_p1": 1.0489644753071252,
+    "q_dyn_pa": 705078.125,
+    "parser": "header-aware p column, never T",
+    "notes": [
+      "blade0: 148 wall points from p_blade0Wall.raw, mean p=576930 Pa"
+    ],
+    "error": null,
+    "n_points": [
+      148
+    ]
   },
-  "duct_nFaces": {
-    "ductBottom": 14,
-    "ductTop": 14
+  "of_station": {
+    "time_s": 2.5e-05,
+    "probe": "owner cells of inlet/outlet patches at latest time t=2.5e-05 s (interior; not inlet fixedValue BC). Relative-frame |U|\u2248|W|.",
+    "n_inlet": 94,
+    "n_outlet": 98,
+    "w_inlet_m_s": 905.2836497904382,
+    "w_outlet_m_s": 942.5913069859607,
+    "w2_over_w1": 1.0412110140331805,
+    "Mw1_OF": 1.287642386862366,
+    "Mw_outlet_OF": 1.398626838115263,
+    "predicted": true,
+    "eta_from_cfd": null,
+    "note": "OpenFOAM station extract. Not stage \u03b7. Not a KO shock term."
   },
-  "note": "duct walls x<=x_LE; cascade cyclics; Fields x3; PREDICTED \u2014 not eta truth"
+  "Mw1_OF": 1.287642386862366,
+  "of_power_w": 11442.969247500001,
+  "ntrs_checks": [
+    {
+      "id": "rotor_turning",
+      "title": "Rotor turning |\u03b21_flow \u2212 \u03b22_flow|",
+      "value": 144.0,
+      "bound": 140.0,
+      "unit": "deg",
+      "pct_vs_bound": 2.857142857142847,
+      "status": "HIGH",
+      "ntrs_id": "19940018586",
+      "report": "NTRS 19940018586 (N94-23059) \u2014 traditional rotor turning 140\u00b0",
+      "url": "https://ntrs.nasa.gov/citations/19940018586",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "Off-nominal HIGH if turning > 140\u00b0. % above = (turning/140 \u2212 1)\u00d7100."
+    },
+    {
+      "id": "huber_high_turning_context",
+      "title": "Huber ~160\u00b0 high-turning context (not a fail bar)",
+      "value": 144.0,
+      "bound": 160.0,
+      "unit": "deg",
+      "pct_vs_bound": -9.999999999999998,
+      "status": "INFO",
+      "ntrs_id": "19920066198",
+      "report": "Huber NTRS 19920066198 (AIAA 92-3221) \u2014 ~160\u00b0 unconventional high-turning rocket turbopump blading (context, not a fail bar)",
+      "url": "https://ntrs.nasa.gov/citations/19920066198",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "Context only. Unconventional high-turning rocket turbopump blading ~160\u00b0. Not a second fail bar."
+    },
+    {
+      "id": "zweifel_rotor",
+      "title": "Incompressible rotor Zweifel Zw",
+      "value": 0.9538481109166856,
+      "bound": 0.8,
+      "unit": "\u2014",
+      "pct_vs_bound": 19.231013864585698,
+      "status": "NOMINAL",
+      "ntrs_id": "19740025363",
+      "report": "NASA-SP-290-VOL-2 Stewart & Glassman Blade Design (NTRS 19740025363 / 19940006731) \u2014 min profile loss at Zweifel = 0.8",
+      "url": "https://ntrs.nasa.gov/citations/19740025363",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "Zw = 2 (s/cx) cos\u00b2(\u03b22) (tan \u03b21 \u2212 tan \u03b22); s=0.00811392 m, cx=0.01 m, stagger from meanline. Off-nominal if |Zw\u22120.8|/0.8 \u2265 25%."
+    },
+    {
+      "id": "mw1_inlet",
+      "title": "Relative inlet Mach Mw1 (method valid, off the 1968 chart)",
+      "value": 1.4043669404740713,
+      "bound": 1.0,
+      "unit": "\u2014",
+      "pct_vs_bound": 40.43669404740713,
+      "status": "INFO",
+      "ntrs_id": "19680010807",
+      "report": "Goldman NASA-TN-D-4422, NTRS 19680010807 \u2014 impulse blade sections Mach 1.5 to 5.0",
+      "url": "https://ntrs.nasa.gov/citations/19680010807",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "INFO: 1.0 \u2264 Mw1 < 1.5. Goldman construction is valid; off TN D-4422's published 1.5\u20135.0 sweep. Do not read thickness/solidity off the 1968 plots. Not NOMINAL. Not a fail. Meanline Mw1 = W1/a."
+    },
+    {
+      "id": "mw1_goldman_range",
+      "title": "Goldman impulse-section Mach range 1.5\u20135.0",
+      "value": 1.4043669404740713,
+      "bound": 1.5,
+      "unit": "\u2014",
+      "pct_vs_bound": -6.375537301728585,
+      "status": "INFO",
+      "ntrs_id": "19680010807",
+      "report": "Goldman NASA-TN-D-4422, NTRS 19680010807 \u2014 impulse blade sections Mach 1.5 to 5.0",
+      "url": "https://ntrs.nasa.gov/citations/19680010807",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "TN D-4422 published impulse-section sweep is Mach 1.5\u20135.0. 1.0 \u2264 Mw1 < 1.5: method valid, off the 1968 chart (INFO, not NOMINAL). Do not read thickness/solidity off those plots. Meanline only if CFD has not run."
+    },
+    {
+      "id": "ko_shock_term_context",
+      "title": "Kacker\u2013Okapuu shock term (cited; no in-hand 25% criterion)",
+      "value": 1.4043669404740713,
+      "bound": null,
+      "unit": "\u2014",
+      "pct_vs_bound": null,
+      "status": "INFO",
+      "ntrs_id": "19890012364",
+      "report": "Kacker\u2013Okapuu 1982 shock term, cited in NTRS 19890012364 (SSME HPFTP loss)",
+      "url": "https://ntrs.nasa.gov/citations/19890012364",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "Shock term exists in the cited SSME HPFTP loss report. No 25% shock-formation design number in-hand \u2014 not invented."
+    },
+    {
+      "id": "impulse_w2_over_w1",
+      "title": "|W2|/|W1| impulse ratio",
+      "value": 1.0,
+      "bound": 1.0,
+      "unit": "\u2014",
+      "pct_vs_bound": null,
+      "status": "N/A",
+      "ntrs_id": null,
+      "report": "ImpulseCalc3 meanline \u2014 |W2|=|W1| by construction",
+      "url": null,
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "N/A (locked by meanline). Not a NASA find."
+    },
+    {
+      "id": "mw1_of_inlet",
+      "title": "OF relative inlet Mach Mw1 (transonic / shock-risk)",
+      "value": 1.287642386862366,
+      "bound": 1.0,
+      "unit": "\u2014",
+      "pct_vs_bound": 28.76423868623661,
+      "status": "HIGH",
+      "ntrs_id": "19680010807",
+      "report": "Goldman NASA-TN-D-4422, NTRS 19680010807 \u2014 impulse blade sections Mach 1.5 to 5.0",
+      "url": "https://ntrs.nasa.gov/citations/19680010807",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "HIGH transonic/shock-risk (OF Mw1 \u2265 1). Value from this-case OpenFOAM station. Literature bound unchanged. Not a 25% shock-formation criterion."
+    },
+    {
+      "id": "mw1_of_goldman_range",
+      "title": "OF Goldman impulse-section Mach range 1.5\u20135.0",
+      "value": 1.287642386862366,
+      "bound": 1.5,
+      "unit": "\u2014",
+      "pct_vs_bound": -14.157174209175594,
+      "status": "NOMINAL",
+      "ntrs_id": "19680010807",
+      "report": "Goldman NASA-TN-D-4422, NTRS 19680010807 \u2014 impulse blade sections Mach 1.5 to 5.0",
+      "url": "https://ntrs.nasa.gov/citations/19680010807",
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "OF Mw1 vs Goldman 1.5 bound. Same NTRS 19680010807. Literature rows stay SCOPING / PREDICTED."
+    },
+    {
+      "id": "of_w2_over_w1",
+      "title": "OF |W2|/|W1| vs meanline 1.0",
+      "value": 1.0412110140331805,
+      "bound": 1.0,
+      "unit": "\u2014",
+      "pct_vs_bound": 4.12110140331805,
+      "status": "INFO",
+      "ntrs_id": null,
+      "report": "this-case OpenFOAM station \u2014 not a NASA id. Meanline locks |W2|/|W1|=1; OF will not.",
+      "url": null,
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "owner cells of inlet/outlet patches at latest time t=2.5e-05 s (interior; not inlet fixedValue BC). Relative-frame |U|\u2248|W|."
+    },
+    {
+      "id": "cfd_mesh_ok",
+      "title": "CFD flag mesh_ok",
+      "value": true,
+      "bound": true,
+      "unit": "\u2014",
+      "pct_vs_bound": null,
+      "status": "NOMINAL",
+      "ntrs_id": null,
+      "report": "this-case CFD flag \u2014 not literature; does not upgrade NTRS rows to FIELD_CFD",
+      "url": null,
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "Extra row when a solve exists. Literature rows stay SCOPING / PREDICTED."
+    },
+    {
+      "id": "cfd_force_plateau",
+      "title": "CFD flag force_plateau",
+      "value": false,
+      "bound": true,
+      "unit": "\u2014",
+      "pct_vs_bound": null,
+      "status": "HIGH",
+      "ntrs_id": null,
+      "report": "this-case CFD flag \u2014 not literature; does not upgrade NTRS rows to FIELD_CFD",
+      "url": null,
+      "predicted": true,
+      "authority": "SCOPING",
+      "note": "Extra row when a solve exists. Literature rows stay SCOPING / PREDICTED."
+    }
+  ]
 }

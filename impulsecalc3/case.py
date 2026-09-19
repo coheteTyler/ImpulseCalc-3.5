@@ -101,8 +101,8 @@ def _cyclic_empty_walls(
 ) -> tuple[str, str]:
     """U vs scalar patch blocks for the shared topology.
 
-    duct_walls: post-stator inlet duct lids (x<=x_LE) as walls while cascade
-    bottom/top stay translational cyclic (x>=x_LE).
+    duct_walls: legacy opt-in for ductBottom/ductTop wall BCs if those patches
+    exist. Classic cascade (default) has full-pitch cyclics and no duct lids.
     """
     if n_blades <= 0:
         blades_u = "            blades { type noSlip; }"
@@ -696,7 +696,8 @@ def _write_case_unlocked(
                 "expected ~3× (~120k+)"
             )
     job["_n_blades_patches"] = n_b
-    # Freeze B: cyclic on cascade+dump; duct lids (x<=x_LE) are walls.
+    # Freeze B / classic cascade: full pitch-strip translational cyclics (incl. x<LE).
+    # duct_walls only if mesh still emits ductBottom/ductTop (legacy).
     job["_lid_walls"] = False
     job["_duct_walls"] = bool(mesh.patches.get("ductBottom") or mesh.patches.get("ductTop"))
     job["_cyclic_pitch"] = bool(mesh.patches.get("bottom")) and bool(mesh.patches.get("top"))
@@ -716,7 +717,7 @@ def _write_case_unlocked(
     write_mesh_preview_png(case_dir / "mesh_preview.png", job, spec, mesh)
     # boundary_conditions.json — what was actually written
     bc = {
-        "inlet_U": "fixedValue from Mrel1+β1 (total_rel→static) or legacy W1",
+        "inlet_U": "fixedValue relative W from job β1: (W*cos(β1°), W*sin(β1°), 0) — β1 is Inputs knob, not hardcoded",
         "outlet_U": "inletOutlet inletValue (0 0 0) — not W1, not a second stator",
         "inlet_bc": (job.get("cfd") or {}).get("inlet_bc", "total_rel"),
         "inlet_p_static": float((job.get("_inlet_resolved") or {}).get("p_static", job["gas"]["p1_pa"])),
@@ -729,9 +730,9 @@ def _write_case_unlocked(
         "blades": f"noSlip on blade0..blade{max(n_b-1, 0)} (live 1-pitch; viz stacks ×{job.get('_viz_stack_blades', 1)})",
         "frontAndBack": "empty",
         "top_bottom": (
-            "cyclic on cascade+dump (x>=x_LE); ductBottom/ductTop noSlip (x<=x_LE)"
+            "legacy ductBottom/ductTop noSlip + cascade cyclics"
             if job.get("_duct_walls")
-            else "cyclic translational period=1×pitch"
+            else "cyclic translational full pitch strip incl. x<LE (classic cascade)"
         ),
         "duct_walls": bool(job.get("_duct_walls")),
         "turbulence": "laminar",

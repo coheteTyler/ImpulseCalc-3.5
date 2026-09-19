@@ -5,15 +5,27 @@
   "vol_ok": true,
   "leftover": 0,
   "cyclic_nFaces": {
-    "bottom": 99,
-    "top": 99
+    "bottom": 113,
+    "top": 113
   },
-  "duct_nFaces": {
-    "ductBottom": 14,
-    "ductTop": 14
+  "duct_nFaces": null,
+  "patches_types": {
+    "inlet": "patch",
+    "outlet": "patch",
+    "bottom": "cyclic",
+    "top": "cyclic",
+    "frontAndBack": "empty",
+    "blade0": "wall"
   },
-  "x_LE_split_m": 5.64456e-05,
+  "inlet_U": {
+    "wx": 293.56614,
+    "wy": 903.50369,
+    "wz": 0.0
+  },
+  "implied_beta1_deg": 72.00000025812406,
+  "job_beta1_flow_deg": 72.0,
   "foam_t_end_s": 2.5e-05,
   "Fields_x3": true,
-  "mesh_preview": "output/geom_tests/knobs_preview/mesh_preview.png"
+  "mesh_preview": "output/geom_tests/knobs_preview/mesh_preview.png",
+  "walls_vs_cyclics": "no duct lids; bottom/top cyclic full pitch strip incl. x<LE"
 }

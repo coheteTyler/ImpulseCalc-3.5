@@ -1,29 +1,28 @@
 {
-  "goal": "ONE staging promote write \u2014 post-stator duct walls + cascade cyclics",
+  "goal": "ONE staging promote write \u2014 remove duct lids; classic cascade full-pitch cyclics",
   "n_cells": 12934,
   "vol_ok": true,
   "leftover_faces": 0,
   "cyclic_nFaces": {
-    "bottom": 99,
-    "top": 99
+    "bottom": 113,
+    "top": 113
   },
-  "duct_nFaces": {
-    "ductBottom": 14,
-    "ductTop": 14
-  },
-  "x_LE_split_m": 5.64456e-05,
-  "walls_vs_cyclics": "ductBottom/ductTop wall x<=x_LE; bottom/top cyclic x>=x_LE",
+  "duct_nFaces": null,
   "patches": {
     "inlet": 94,
     "outlet": 98,
-    "ductBottom": 14,
-    "ductTop": 14,
-    "bottom": 99,
-    "top": 99,
+    "bottom": 113,
+    "top": 113,
     "frontAndBack": 25868,
     "blade0": 148
   },
-  "first_cell_m": 6.063157894735101e-07,
+  "inlet_U": {
+    "wx": 293.56614,
+    "wy": 903.50369,
+    "wz": 0.0
+  },
+  "implied_beta1_deg": 72.00000025812406,
+  "job_beta1_flow_deg": 72.0,
   "foam_t_end_s": 2.5e-05,
   "repair_applied": false,
   "success_write": true,
