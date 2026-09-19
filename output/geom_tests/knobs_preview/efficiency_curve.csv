@@ -1,0 +1,2 @@
+geom_hash,p1_pa,T1_K,W1_m_s,beta1_deg,gas_gamma,gas_R,Y_rel,zeta_rel,delta_s,w_Ft,w_gas,residual,p3_over_p2,W3_over_W1,plateau,sample_on_wall,work_match_ok,gate_ok,predicted
+0a2e0a404bf6,550000.0,1100.0,950.0,72,1.3,320.0,0.21217548821121504,0.05549972418357074,110.53980548815542,829015.0837386701,30458.570025128625,0.9632593295072902,1.0745203960515333,0.9438581974404887,False,True,False,False,True

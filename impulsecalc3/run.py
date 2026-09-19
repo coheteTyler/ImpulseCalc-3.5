@@ -711,6 +711,31 @@ def run_job(
         report["of_station"] = None
         report["Mw1_OF"] = None
         report["of_power_w"] = None
+    # Field efficiency load-path (Methods 6/7/8). Never eta_from_cfd.
+    report["eta_from_cfd"] = None
+    report["row_efficiency_PREDICTED"] = None
+    if not skip_solve:
+        try:
+            from .efficiency_of import run_efficiency_on_case
+
+            csv_eff = out_root / "efficiency_curve.csv"
+            eff = run_efficiency_on_case(
+                case_dir,
+                job,
+                forces=forces if isinstance(forces, dict) else None,
+                flags=flags,
+                csv_path=csv_eff,
+            )
+            report["row_efficiency_PREDICTED"] = eff.get("row_efficiency_PREDICTED")
+            report["efficiency_methods"] = eff.get("methods")
+            report["efficiency_csv"] = eff.get("csv_path")
+        except Exception as exc:
+            report["row_efficiency_PREDICTED"] = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "predicted": True,
+                "eta_from_cfd": None,
+            }
+    report["eta_from_cfd"] = None
     cfd_for_ntrs = flags if (not skip_solve) else None
     of_for_ntrs = of_st if (not skip_solve and isinstance(of_st, dict) and of_st.get("Mw1_OF") is not None) else None
     report["ntrs_checks"] = ntrs_evaluate(ml, job, cfd_flags=cfd_for_ntrs, of_station=of_for_ntrs)

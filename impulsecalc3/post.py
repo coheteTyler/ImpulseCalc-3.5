@@ -861,3 +861,22 @@ def estimate_yplus(
         "notes": notes,
         "of_yplus_present": bool(yplus_file),
     }
+
+
+def extract_efficiency_predicted(
+    case_dir: Path,
+    job: dict[str, Any] | None = None,
+    *,
+    forces: dict[str, Any] | None = None,
+    flags: dict[str, Any] | None = None,
+    csv_path: Path | None = None,
+) -> dict[str, Any]:
+    """Marlin 2D relative-cascade efficiency load-path (Methods 6/7/8). PREDICTED.
+
+    Keeps eta_from_cfd=None. 1D meanline/AM stay SCOPING — not wired here.
+    """
+    from .efficiency_of import run_efficiency_on_case
+
+    return run_efficiency_on_case(
+        case_dir, job, forces=forces, flags=flags, csv_path=csv_path
+    )
