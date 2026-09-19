@@ -1,16 +1,19 @@
 {
-  "promoted_from": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging",
-  "promoted_to": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/openfoam_cases/knobs_preview",
+  "promoted_from": "output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging",
+  "promoted_to": "output/geom_tests/knobs_preview/openfoam_cases/knobs_preview",
   "n_cells": 12934,
   "vol_ok": true,
   "leftover": 0,
   "cyclic_nFaces": {
-    "bottom": 113,
-    "top": 113
+    "bottom": 99,
+    "top": 99
   },
-  "first_cell_m": 6.063157894735101e-07,
-  "d_o_m": 4.37e-05,
-  "n_rad": 20,
-  "r_north": 1.0,
-  "mesh_preview": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview/mesh_preview.png"
+  "duct_nFaces": {
+    "ductBottom": 14,
+    "ductTop": 14
+  },
+  "x_LE_split_m": 5.64456e-05,
+  "foam_t_end_s": 2.5e-05,
+  "Fields_x3": true,
+  "mesh_preview": "output/geom_tests/knobs_preview/mesh_preview.png"
 }

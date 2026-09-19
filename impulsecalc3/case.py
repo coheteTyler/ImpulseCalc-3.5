@@ -94,9 +94,16 @@ def _hdr(cls: str, obj: str) -> str:
 
 
 def _cyclic_empty_walls(
-    n_blades: int = 3, cyclic: bool = True, lid_walls: bool = False
+    n_blades: int = 3,
+    cyclic: bool = True,
+    lid_walls: bool = False,
+    duct_walls: bool = False,
 ) -> tuple[str, str]:
-    """U vs scalar patch blocks for the shared topology."""
+    """U vs scalar patch blocks for the shared topology.
+
+    duct_walls: post-stator inlet duct lids (x<=x_LE) as walls while cascade
+    bottom/top stay translational cyclic (x>=x_LE).
+    """
     if n_blades <= 0:
         blades_u = "            blades { type noSlip; }"
         blades_s = "            blades { type zeroGradient; }"
@@ -117,9 +124,21 @@ def _cyclic_empty_walls(
         # scalars: zeroGradient on lid walls
     else:
         cyc = ""
+    duct_u = (
+        "            ductBottom { type noSlip; }\n"
+        "            ductTop { type noSlip; }\n"
+        if duct_walls
+        else ""
+    )
+    duct_s = (
+        "            ductBottom { type zeroGradient; }\n"
+        "            ductTop { type zeroGradient; }\n"
+        if duct_walls
+        else ""
+    )
     shared_u = textwrap.dedent(
         f"""\
-{cyc}            frontAndBack {{ type empty; }}
+{cyc}{duct_u}            frontAndBack {{ type empty; }}
         """
     )
     if lid_walls and not cyclic:
@@ -129,11 +148,15 @@ def _cyclic_empty_walls(
         )
         shared_s = textwrap.dedent(
             f"""\
-{cyc_s}            frontAndBack {{ type empty; }}
+{cyc_s}{duct_s}            frontAndBack {{ type empty; }}
         """
         )
     else:
-        shared_s = shared_u
+        shared_s = textwrap.dedent(
+            f"""\
+{cyc}{duct_s}            frontAndBack {{ type empty; }}
+        """
+        )
     return shared_u + blades_u, shared_s + blades_s
 
 
@@ -438,7 +461,10 @@ def write_fields(case_dir: Path, job: dict[str, Any], ml: Meanline) -> None:
     n_blades = 3 if raw_nb is None else int(raw_nb)
     cyclic = bool(job.get("_cyclic_pitch", True))
     lid_walls = bool(job.get("_lid_walls", False))
-    u_shared, s_shared = _cyclic_empty_walls(n_blades=n_blades, cyclic=cyclic, lid_walls=lid_walls)
+    duct_walls = bool(job.get("_duct_walls", False))
+    u_shared, s_shared = _cyclic_empty_walls(
+        n_blades=n_blades, cyclic=cyclic, lid_walls=lid_walls, duct_walls=duct_walls
+    )
 
     if outlet_kind == "inletOutlet":
         p_out = (
@@ -467,7 +493,7 @@ def write_fields(case_dir: Path, job: dict[str, Any], ml: Meanline) -> None:
         internalField uniform ({wx:.8g} {wy:.8g} 0);
         boundaryField {{
             inlet  {{ type fixedValue; value uniform ({wx:.8g} {wy:.8g} 0); }}
-            outlet {{ type inletOutlet; inletValue uniform (0 0 0); value uniform ({wx:.8g} {wy:.8g} 0); }}
+            outlet {{ type inletOutlet; inletValue uniform (0 0 0); value uniform (0 0 0); }}
         {u_shared}
         }}
         // ************************************************************************* //
@@ -670,8 +696,9 @@ def _write_case_unlocked(
                 "expected ~3× (~120k+)"
             )
     job["_n_blades_patches"] = n_b
-    # Freeze B: 1-pitch cyclic solve; never lid walls on the live case.
+    # Freeze B: cyclic on cascade+dump; duct lids (x<=x_LE) are walls.
     job["_lid_walls"] = False
+    job["_duct_walls"] = bool(mesh.patches.get("ductBottom") or mesh.patches.get("ductTop"))
     job["_cyclic_pitch"] = bool(mesh.patches.get("bottom")) and bool(mesh.patches.get("top"))
     if not job.get("_viz_stack_blades"):
         job["_viz_stack_blades"] = int((job.get("geometry") or {}).get("n_blades_cascade") or 3)
@@ -701,7 +728,12 @@ def _write_case_unlocked(
         "outlet_p_NOT": "0.95 p1",
         "blades": f"noSlip on blade0..blade{max(n_b-1, 0)} (live 1-pitch; viz stacks ×{job.get('_viz_stack_blades', 1)})",
         "frontAndBack": "empty",
-        "top_bottom": "cyclic translational period=1×pitch",
+        "top_bottom": (
+            "cyclic on cascade+dump (x>=x_LE); ductBottom/ductTop noSlip (x<=x_LE)"
+            if job.get("_duct_walls")
+            else "cyclic translational period=1×pitch"
+        ),
+        "duct_walls": bool(job.get("_duct_walls")),
         "turbulence": "laminar",
         "predicted": True,
     }
