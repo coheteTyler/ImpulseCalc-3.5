@@ -21,8 +21,13 @@ import math
 from pathlib import Path
 from typing import Any
 
-# Honesty gate: |w_Ft − w_gas| / max(|w|,eps) must be below this to publish η columns.
-WORK_MATCH_TOL = 0.03
+# Dual-work honesty gate (collegiate):
+#   residual ≤ WORK_MATCH_CLEAN  → clean pass
+#   CLEAN < residual ≤ WORK_MATCH_WARN → WARNING stamp, data+η retained (treat with caution)
+#   residual > WORK_MATCH_WARN   → hard fail, η columns dark
+WORK_MATCH_CLEAN = 0.03
+WORK_MATCH_WARN = 0.08
+WORK_MATCH_TOL = WORK_MATCH_CLEAN  # back-compat alias (= clean target)
 
 
 def geom_hash(job: dict[str, Any] | None) -> str:
@@ -300,7 +305,7 @@ def compute_efficiency_of(
     *,
     forces: dict[str, Any] | None = None,
     flags: dict[str, Any] | None = None,
-    work_match_tol: float = WORK_MATCH_TOL,
+    work_match_tol: float | None = None,
 ) -> dict[str, Any]:
     """Full-admission Marlin 2D relative cascade efficiency row (PREDICTED)."""
     case_dir = Path(case_dir)
@@ -431,28 +436,63 @@ def compute_efficiency_of(
         w_gas = float(U_blade) * (float(Wy1) - float(Wy3))
     row["w_Ft"] = w_ft
     row["w_gas"] = w_gas
+    clean_tol = float(WORK_MATCH_CLEAN)
+    warn_tol = float(WORK_MATCH_WARN)
+    # work_match_tol arg kept for back-compat; if caller passes it, use as clean target only
+    if work_match_tol is not None and abs(float(work_match_tol) - WORK_MATCH_CLEAN) > 1e-15:
+        clean_tol = float(work_match_tol)
+
     if w_ft is not None and w_gas is not None:
         scale = max(abs(w_ft), abs(w_gas), 1e-12)
-        row["residual"] = abs(w_ft - w_gas) / scale
-        row["work_match_ok"] = bool(row["residual"] <= work_match_tol)
+        resid = abs(w_ft - w_gas) / scale
+        row["residual"] = resid
+        row["work_match_ok"] = bool(resid <= clean_tol)  # clean band only
+        row["work_match_hard_fail"] = bool(resid > warn_tol)
+        if resid <= clean_tol:
+            row["work_match_band"] = "clean"
+            row["work_residual_warning"] = None
+        elif resid <= warn_tol:
+            pct = 100.0 * resid
+            row["work_match_band"] = "warning"
+            row["work_residual_warning"] = (
+                f"WARNING: work residual {pct:.1f}% off nominal — data retained, treat with caution."
+            )
+        else:
+            pct = 100.0 * resid
+            row["work_match_band"] = "hard_fail"
+            row["work_residual_warning"] = (
+                f"HARD FAIL: work residual {pct:.1f}% > {100.0*warn_tol:.0f}% — η columns dark."
+            )
     else:
         row["residual"] = None
         row["work_match_ok"] = False
+        row["work_match_hard_fail"] = True
+        row["work_match_band"] = "missing"
+        row["work_residual_warning"] = "HARD FAIL: missing w_Ft or w_gas — η columns dark."
 
-    row["gate_ok"] = bool(row["plateau"] and row["sample_on_wall"] and row["work_match_ok"])
+    # gate_ok: plateau + wall sample + residual ≤ warn (8%).
+    # clean (≤3%): publish η quietly. warning (3–8%): publish η + WARNING stamp.
+    # hard fail (>8%): η dark, run not killed mid-foam but post refuses η.
+    work_ok_for_gate = bool(
+        row.get("work_match_band") in ("clean", "warning")
+    )
+    row["gate_ok"] = bool(row["plateau"] and row["sample_on_wall"] and work_ok_for_gate)
     row["publish_eta"] = bool(row["gate_ok"] and u_mapped)
+    row["run_killed"] = False  # warning/hard-fail never aborts foam; only darkens η on hard fail
 
-    # Optional derived η — dark unless gate passes. Still PREDICTED; never eta_from_cfd.
+    if row.get("work_residual_warning"):
+        import logging
+        logging.getLogger("impulsecalc3.efficiency_of").warning("%s", row["work_residual_warning"])
+        print(row["work_residual_warning"])
+
+    # Optional derived η — dark unless clean gate passes. Still PREDICTED; never eta_from_cfd.
     if u_mapped and w_ft is not None and p1a and T1a and p3a:
         cp, _ = _cp_r(gamma, rspec)
-        # relative total enthalpy drop available (impulse scoop uses KE; ts uses exit p)
         h01 = cp * T0_rel(T1a, W1a or 0.0, gamma, rspec)
-        # isentropic to exit static p3 from inlet relative total
         p01 = row.get("p0_rel_1")
         if p01 and p01 > 0 and p3a > 0:
             T3s = (h01 / cp) * (float(p3a) / float(p01)) ** ((gamma - 1.0) / gamma)
             dh_ts = h01 - cp * T3s
-            # total-to-total isentropic to p03
             p03 = row.get("p0_rel_3")
             dh_tt = None
             if p03 and p03 > 0:
@@ -464,13 +504,18 @@ def compute_efficiency_of(
                 if dh_tt and abs(dh_tt) > 1e-9:
                     row["eta_tt_PREDICTED"] = float(w_ft) / dh_tt
             else:
-                # dark η: keep keys, values None — residual still published
                 row["eta_ts_PREDICTED"] = None
                 row["eta_tt_PREDICTED"] = None
-                row["eta_dark_reason"] = (
-                    "gate failed: need Ft plateau + sample_on_wall + |w_Ft−w_gas| "
-                    f"≤ {work_match_tol}"
-                )
+                if row.get("work_match_hard_fail"):
+                    row["eta_dark_reason"] = (
+                        f"hard fail: |w_Ft−w_gas| > {warn_tol}"
+                    )
+                elif not row["plateau"] or not row["sample_on_wall"]:
+                    row["eta_dark_reason"] = "gate failed: need Ft plateau + sample_on_wall"
+                else:
+                    row["eta_dark_reason"] = (
+                        f"gate failed: |w_Ft−w_gas| missing or > {warn_tol}"
+                    )
 
     return {
         "row_efficiency_PREDICTED": row,
@@ -505,6 +550,9 @@ CSV_COLUMNS = [
     "plateau",
     "sample_on_wall",
     "work_match_ok",
+    "work_match_band",
+    "work_residual_warning",
+    "work_match_hard_fail",
     "gate_ok",
     "predicted",
 ]
@@ -524,6 +572,61 @@ def append_efficiency_csv(
             w.writeheader()
         w.writerow({k: row.get(k) for k in CSV_COLUMNS})
     return out_path
+
+
+def restamp_efficiency_csv(csv_path: Path | str) -> Path:
+    """Re-apply dual-work bands (3% clean / 8% warn) to an existing CSV in place."""
+    csv_path = Path(csv_path)
+    if not csv_path.is_file():
+        raise FileNotFoundError(csv_path)
+    import csv as _csv
+    with csv_path.open("r", newline="") as f:
+        rows = list(_csv.DictReader(f))
+    out = []
+    for r in rows:
+        resid_s = r.get("residual")
+        try:
+            resid = float(resid_s) if resid_s not in (None, "", "None") else None
+        except (TypeError, ValueError):
+            resid = None
+        if resid is None:
+            r["work_match_ok"] = "False"
+            r["work_match_band"] = "missing"
+            r["work_match_hard_fail"] = "True"
+            r["work_residual_warning"] = "HARD FAIL: missing residual — η columns dark."
+        elif resid <= WORK_MATCH_CLEAN:
+            r["work_match_ok"] = "True"
+            r["work_match_band"] = "clean"
+            r["work_match_hard_fail"] = "False"
+            r["work_residual_warning"] = ""
+        elif resid <= WORK_MATCH_WARN:
+            pct = 100.0 * resid
+            r["work_match_ok"] = "False"
+            r["work_match_band"] = "warning"
+            r["work_match_hard_fail"] = "False"
+            r["work_residual_warning"] = (
+                f"WARNING: work residual {pct:.1f}% off nominal — data retained, treat with caution."
+            )
+            # keep gate_ok if plateau+wall were true
+            if str(r.get("plateau")).lower() in ("true", "1") and str(r.get("sample_on_wall")).lower() in ("true", "1"):
+                r["gate_ok"] = "True"
+        else:
+            pct = 100.0 * resid
+            r["work_match_ok"] = "False"
+            r["work_match_band"] = "hard_fail"
+            r["work_match_hard_fail"] = "True"
+            r["work_residual_warning"] = (
+                f"HARD FAIL: work residual {pct:.1f}% > {100.0*WORK_MATCH_WARN:.0f}% — η columns dark."
+            )
+            r["gate_ok"] = "False"
+        out.append(r)
+    with csv_path.open("w", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for r in out:
+            w.writerow({k: r.get(k, "") for k in CSV_COLUMNS})
+    return csv_path
+
 
 
 def run_efficiency_on_case(
