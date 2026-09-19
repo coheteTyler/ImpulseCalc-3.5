@@ -651,7 +651,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         Ui_s = _mask_field_through_metal(X, Y, Ui_s, _bp)
         Vi_s = _mask_field_through_metal(X, Y, Vi_s, _bp)
         speed = np.hypot(np.nan_to_num(Ui_s, nan=0.0), np.nan_to_num(Vi_s, nan=0.0))
-        fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
+        fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
         _spd = _mask_field_through_metal(X, Y, np.hypot(Ui_s, Vi_s), _blade_polys_for_plot(job))
         cf = ax.contourf(X, Y, np.ma.masked_invalid(_spd), levels=24, cmap="turbo")
         ax.streamplot(
@@ -690,7 +690,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         if a_loc is not None:
             mach = umag / np.maximum(a_loc, 1.0)
             Mi = np.ma.filled(mtri.LinearTriInterpolator(triang, mach)(X, Y), np.nan)
-            fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
+            fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
             Mi = _mask_field_through_metal(X, Y, Mi, blade_polys_m)
             cf = ax.contourf(X, Y, np.ma.masked_invalid(Mi), levels=24, cmap="turbo")
             ax.streamplot(
@@ -738,7 +738,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         if vmax <= vmin:
             vmax = vmin * 10.0
         levels = np.logspace(np.log10(vmin), np.log10(vmax), 64)
-        fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
+        fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
         cf = ax.contourf(
             X, Y, np.ma.masked_less_equal(np.ma.masked_invalid(sch), 0),
             levels=levels,
@@ -767,7 +767,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         paths["contour_shock"] = str(fg)
         if tv is not None and len(tv) == n_field:
             Ti = np.ma.filled(mtri.LinearTriInterpolator(triang, tv)(X, Y), np.nan)
-            fig, ax = plt.subplots(figsize=(8, 4.2), dpi=140)
+            fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
             Ti = _mask_field_through_metal(X, Y, Ti, blade_polys_m)
             cf = ax.contourf(X, Y, np.ma.masked_invalid(Ti), levels=24, cmap="inferno")
             _fill_blades(ax)

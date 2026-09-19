@@ -284,10 +284,16 @@ def write_control_dict(
     t_end = min(t_max, max(t_min, t_end))
     if t_end < t_min - 1e-18:
         raise ValueError(f"endTime {t_end} below floor {t_min} s (max(10 c/W1, 1.2 Lx/a))")
-    write_iv = t_end / 8.0
-    max_co = float(cfd.get("max_co", 0.12))
-    max_dt = min(t_end / 40.0, 5e-7)
+    # fast_turnaround: wall-clock preset — does not change BCs / thermo / schemes.
+    # Higher maxCo + binary + purgeWrite; physics model unchanged.
+    fast = bool(cfd.get("fast_turnaround", True))
+    write_iv = t_end / (4.0 if fast else 8.0)
+    max_co = float(cfd.get("max_co", 0.40 if fast else 0.12))
+    max_dt = float(cfd.get("max_delta_t", min(t_end / 40.0, 2e-6 if fast else 5e-7)))
     dt0 = min(1e-11, max_dt * 0.05)
+    write_fmt = str(cfd.get("write_format", "binary" if fast else "ascii"))
+    purge = int(cfd.get("purge_write", 3 if fast else 0))
+    force_every = int(cfd.get("forces_execute_interval", 50 if fast else 20))
     gamma = float(job["gas"]["gamma"])
     n_blades = int(job.get("_n_blades_patches") or job.get("geometry", {}).get("n_blades_cascade") or 3)
     force_blocks = []
@@ -300,13 +306,13 @@ def write_control_dict(
                 type            forces;
                 libs            ("libforces.so");
                 writeControl    timeStep;
-                writeInterval   20;
+                writeInterval   {force_every};
                 executeControl  timeStep;
-                executeInterval 20;
+                executeInterval {force_every};
                 patches         (blade{k});
                 rho             rho;
                 CofR            (0 0 0);
-                log             true;
+                log             false;
                 writeFields     no;
             }}"""
         )
@@ -352,8 +358,8 @@ def write_control_dict(
         deltaT          {dt0:.8g};
         writeControl    adjustableRunTime;
         writeInterval   {write_iv:.8g};
-        purgeWrite      0;
-        writeFormat     ascii;
+        purgeWrite      {purge};
+        writeFormat     {write_fmt};
         writePrecision  8;
         writeCompression off;
         timeFormat      general;
