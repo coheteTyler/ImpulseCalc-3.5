@@ -28,5 +28,6 @@
   "foam_t_end": 2.5e-05,
   "Fields_x3": true,
   "contour_M": "output/geom_tests/knobs_preview/viewer_plots/contour_M.png",
-  "note": "post-stator duct walls; cascade cyclics; PREDICTED only; no Grok/HOH zipper"
+  "note": "post-stator duct walls; cascade cyclics; PREDICTED only; no Grok/HOH zipper",
+  "SHA": "20203e9779d7ab7a6afd693f4ec9a8e85e5eb9be"
 }
