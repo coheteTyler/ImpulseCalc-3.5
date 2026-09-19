@@ -288,7 +288,11 @@ def write_control_dict(
     # Higher maxCo + binary + purgeWrite; physics model unchanged.
     fast = bool(cfd.get("fast_turnaround", True))
     write_iv = t_end / (4.0 if fast else 8.0)
-    max_co = float(cfd.get("max_co", 0.40 if fast else 0.12))
+    if "max_co" in cfd and cfd.get("max_co") not in (None, ""):
+        max_co = float(cfd["max_co"])
+    else:
+        max_co = 0.40 if fast else 0.12
+
     max_dt = float(cfd.get("max_delta_t", min(t_end / 40.0, 2e-6 if fast else 5e-7)))
     dt0 = min(1e-11, max_dt * 0.05)
     write_fmt = str(cfd.get("write_format", "binary" if fast else "ascii"))
