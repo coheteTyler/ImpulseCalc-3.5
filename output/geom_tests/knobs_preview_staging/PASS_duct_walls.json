@@ -1,0 +1,33 @@
+{
+  "PASS": true,
+  "promoted": true,
+  "n_cells": 12934,
+  "vol_ok": true,
+  "leftover": 0,
+  "cyclic_nFaces": {
+    "bottom": 99,
+    "top": 99
+  },
+  "duct_nFaces": {
+    "ductBottom": 14,
+    "ductTop": 14
+  },
+  "x_LE_split_m": 5.64456e-05,
+  "patches_types": {
+    "inlet": "patch",
+    "outlet": "patch",
+    "ductBottom": "wall",
+    "ductTop": "wall",
+    "bottom": "cyclic",
+    "top": "cyclic",
+    "frontAndBack": "empty",
+    "blade0": "wall"
+  },
+  "walls_vs_cyclics": "ductBottom/ductTop wall for x<=x_LE; bottom/top cyclic for x>=x_LE",
+  "foam_ok": true,
+  "foam_t_end": 2.5e-05,
+  "Fields_x3": true,
+  "contour_M": "output/geom_tests/knobs_preview/viewer_plots/contour_M.png",
+  "note": "post-stator duct walls; cascade cyclics; PREDICTED only; no Grok/HOH zipper",
+  "SHA": "20203e9779d7ab7a6afd693f4ec9a8e85e5eb9be"
+}

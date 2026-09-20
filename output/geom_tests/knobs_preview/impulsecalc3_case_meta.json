@@ -1,0 +1,28 @@
+{
+  "app": "ImpulseCalc3",
+  "solver": "rhoCentralFoam",
+  "openfoam": "ESI-v2412",
+  "wall": "noSlip",
+  "mesh": "body_fitted_OH",
+  "predicted": true,
+  "t_end_s": 0.00015078466097721605,
+  "t_chord_convective_s": 1.0526315789473684e-05,
+  "t_chord_acoustic_s": 1.4782809899727065e-05,
+  "Mw1": 1.4043669404740713,
+  "n_chords": 14.324542792835524,
+  "mesh_cells": 5760,
+  "first_cell_m": 1.2179387772169207e-05,
+  "patches": {
+    "inlet": 72,
+    "outlet": 84,
+    "bottom": 54,
+    "top": 54,
+    "frontAndBack": 11520,
+    "blade0": 56,
+    "blade1": 56,
+    "blade2": 56
+  },
+  "euler_work_j_kg": 283844.05565044784,
+  "ainley_mathieson_Yp": 0.059489554923941756,
+  "engine_note": "GEOMETRY TEST. Pc is chamber pressure and is NOT the cascade inlet. This JSON is not Marlin V2 and does not claim the wheel photo is the signed V2 table."
+}

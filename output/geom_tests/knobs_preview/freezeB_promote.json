@@ -1,0 +1,52 @@
+{
+  "n_blades_live": 1,
+  "viz_stack_blades": 3,
+  "n_cells": 11660,
+  "vol_ok": true,
+  "checkMesh_nfail": 1,
+  "check": {
+    "min_volume": 1.4500619e-14,
+    "max_volume": 9.1605325e-10,
+    "open_cells": false,
+    "negative_volume": false,
+    "failed_checks": 1,
+    "mesh_ok_strict": false
+  },
+  "patches": {
+    "inlet": 94,
+    "outlet": 98,
+    "bottom": 100,
+    "top": 100,
+    "frontAndBack": 23320,
+    "blade0": 148
+  },
+  "pitch_period_m": 0.008113916665963448,
+  "y_span_m": 0.008113916665963448,
+  "mesh_kind": "body_fitted_OH",
+  "cyclic": true,
+  "cyclic_nFaces": {
+    "bottom": 100,
+    "top": 100
+  },
+  "x_TE": 0.009943554402532034,
+  "x_out": 0.03504293451832309,
+  "leftover_faces": 0,
+  "staging": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/openfoam_cases/knobs_preview_staging",
+  "write_s": 3.3031435012817383,
+  "notes_tail": [
+    "U-cavity depth 1.10 mm / y-span 4.77 mm; axis-aligned H (vertical cavity/back, horizontal stems) + offset collar",
+    "H-O-H TE wake: open O, TE projected to cut chord (unkink 66 um), cut wall sep=0.4955 mm",
+    "dump xs from TE collar n=28 L=25.06 mm first_\u0394x=0.3333 mm last_\u0394x=3.457 mm",
+    "H-blocks: vertical rays cavity+south and back\u2192y_top; inlet stems horizontal; dump from TE collar silhouette (open-O east stem) with dump_xs_1c packing. No TE-plane AABB east wall / Cartesian cliff at x_TE.",
+    "H TE nodes snapped to wake chord (unkinked).",
+    "NOT subsetMesh stairs. NOT AABB morph across the cavity. NOT Gmsh.",
+    "TE fence assert: no full-pitch vertical column within 0.02c of x_TE_col=0.00998649"
+  ],
+  "promoted_to": "output/geom_tests/knobs_preview/openfoam_cases/knobs_preview",
+  "FAIL_json": "/workspace/ImpulseCalc3/output/geom_tests/knobs_preview_staging/FAIL.json",
+  "repair_applied": true,
+  "repair_note": "One repair (sin2 past-TE collar bulge) left 36 unclassified faces; reverted per mesh-writer-stop. Kept first PASS: dump west = O east collar silhouette + dump_xs_1c; no h_east\u2192x_cart AABB cliff.",
+  "te_fence_gone_on_preview": false,
+  "note": "mesh-writer-stop: one repair failed; no second remesh loop / no Grok Build / no HOH zipper",
+  "SHA": "f4bbfa8ddc16fc41e8e512fd3e7feed3357f2ea5"
+}
