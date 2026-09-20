@@ -225,8 +225,14 @@ def run_job(
     else:
         mesh, t_end = write_case(case_dir, job, ml, times, spec)
     is_geom = bool(job.get("geometry_test"))
-    smoke_s = (job.get("cfd") or {}).get("smoke_end_s")
-    if is_geom and smoke_s is not None and not reuse:
+    # smoke_end_s applies ONLY with explicit smoke=True (job or cfd).
+    # geometry_test alone must NOT silently force a short end (e.g. 2.5e-5)
+    # when the design floor is wanted on the Run/efficiency path.
+    cfd_j = job.get("cfd") or {}
+    smoke_flag = bool(job.get("smoke") or cfd_j.get("smoke"))
+    smoke_s = cfd_j.get("smoke_end_s")
+    smoke_active = bool(smoke_flag and smoke_s is not None and not reuse)
+    if smoke_active:
         import re as _re
         t_smoke = float(smoke_s)
         cd = case_dir / "system" / "controlDict"
@@ -236,8 +242,13 @@ def run_job(
         cd.write_text(txt, encoding="utf-8")
         t_end = t_smoke
         mesh.check_notes.append(
-            f"geometry_test smoke: controlDict endTime patched to {t_smoke:.8g} s "
-            f"(design floor {times.t_end_floor_s:.8g} s not required)"
+            f"explicit smoke=True: controlDict endTime patched to {t_smoke:.8g} s "
+            f"(design floor {times.t_end_floor_s:.8g} s not required); η refused"
+        )
+    elif smoke_s is not None and not smoke_flag:
+        mesh.check_notes.append(
+            f"smoke_end_s={smoke_s} ignored (no explicit smoke=True); "
+            f"keeping design-floor endTime {t_end:.8g} s"
         )
     if (not is_geom) and t_end + 1e-18 < times.t_end_floor_s:
         errors.append(f"endTime {t_end} below max(5*c/W1, 1.2*Lx/a) floor {times.t_end_floor_s}")
@@ -712,9 +723,20 @@ def run_job(
         report["Mw1_OF"] = None
         report["of_power_w"] = None
     # Field efficiency load-path (Methods 6/7/8). Never eta_from_cfd.
+    # Smoke runs refuse η and stamp smoke_truncated (short end is not a design floor).
     report["eta_from_cfd"] = None
     report["row_efficiency_PREDICTED"] = None
-    if not skip_solve:
+    report["smoke_truncated"] = bool(smoke_active)
+    if smoke_active:
+        report["row_efficiency_PREDICTED"] = {
+            "refused": True,
+            "smoke_truncated": True,
+            "predicted": True,
+            "eta_from_cfd": None,
+            "publish_eta": False,
+            "note": "smoke=True run — η refused; design-floor path required for efficiency",
+        }
+    elif not skip_solve:
         try:
             from .efficiency_of import run_efficiency_on_case
 

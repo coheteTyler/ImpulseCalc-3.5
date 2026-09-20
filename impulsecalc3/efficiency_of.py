@@ -7,7 +7,7 @@ Methods (group-chat + voice stamp):
   8  Y_rel, ζ_rel from mass-weighted p,T,W → p0,rel
   7  Δs from mass-avg T,p on the same planes
   6  work identities w_Ft = Ft·U/ṁ  and  w_gas = U·(Wy1 − Wy3); honesty gate
-Static p3/p2 and W3/W1 are impulse checks only.
+Static p3/p1 and W3/W1 are impulse checks only.
 η_tt / η_ts are optional derived PREDICTED (only if U mapped) — not primary CSV.
 eta_from_cfd stays None.
 """
@@ -340,7 +340,7 @@ def compute_efficiency_of(
         "w_Ft": None,
         "w_gas": None,
         "residual": None,
-        "p3_over_p2": None,
+        "p3_over_p1": None,
         "W3_over_W1": None,
         "plateau": False,
         "sample_on_wall": False,
@@ -374,9 +374,9 @@ def compute_efficiency_of(
         return {"row_efficiency_PREDICTED": row, "eta_from_cfd": None, "predicted": True}
 
     x_le, x_te = _blade_le_te(case_dir, chord)
-    # Stations: interior near LE (off inlet face) + TE+1c (off dump)
+    # Stations: interior near LE (off inlet face) + TE+0.2c (near-wake, off dump)
     x1 = x_le - 0.10 * chord
-    x3 = x_te + 1.0 * chord
+    x3 = x_te + 0.2 * chord
     xs = [float(c[0]) for c in fields["C"]]
     xmin, xmax = min(xs), max(xs)
     # keep interior: nudge off domain faces
@@ -419,7 +419,7 @@ def compute_efficiency_of(
         Wis = W_is_exit(T01, p01, p3a, gamma, rspec)
         row["zeta_rel"] = zeta_rel(W3a, Wis) if Wis is not None else None
         row["delta_s"] = delta_s(T1a, p1a, T3a, p3a, gamma, rspec)
-        row["p3_over_p2"] = (float(p3a) / float(p1a)) if abs(float(p1a)) > 1e-12 else None
+        row["p3_over_p1"] = (float(p3a) / float(p1a)) if abs(float(p1a)) > 1e-12 else None
         row["W3_over_W1"] = (float(W3a) / float(W1a)) if abs(float(W1a)) > 1e-12 else None
         row["p0_rel_1"] = p01
         row["p0_rel_3"] = p03
@@ -525,7 +525,7 @@ def compute_efficiency_of(
             "8": "Y_rel=(p01rel−p03rel)/(p03rel−p3); ζ_rel=1−(W3/W3is)² from p,T,W→p0,rel",
             "7": "delta_s=Cp ln(T3/T1)−R ln(p3/p1) mass-avg",
             "6": "w_Ft=Ft*U/mdot ; w_gas=U*(Wy1−Wy3) ; residual honesty gate",
-            "impulse_check": "p3/p2 and W3/W1 only — not η",
+            "impulse_check": "p3/p1 and W3/W1 only — not η",
             "scoping_only": "1D meanline / Ainley–Mathieson — not CFD η",
         },
     }
@@ -545,7 +545,7 @@ CSV_COLUMNS = [
     "w_Ft",
     "w_gas",
     "residual",
-    "p3_over_p2",
+    "p3_over_p1",
     "W3_over_W1",
     "plateau",
     "sample_on_wall",
