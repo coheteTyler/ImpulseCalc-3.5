@@ -1,0 +1,16 @@
+{
+  "time_s": 0.00012,
+  "Wy1": 879.289292199661,
+  "Wy3": -329.8313223433448,
+  "Wy3_force_implied": -447.7385770823006,
+  "Ft_N": 22.234955900000003,
+  "mdot_span": 0.016755455114918622,
+  "gap_now": 117.90725473895577,
+  "gap_prior_approx": 178.0,
+  "moved_toward_force": true,
+  "prior_Wy3": -263.0,
+  "prior_force_implied": -441.0,
+  "residual": 0.08885062436763579,
+  "work_match_band": "hard_fail",
+  "gate_ok": false
+}

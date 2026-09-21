@@ -176,11 +176,19 @@ def _dump_block_from_west(
     west: np.ndarray,
     xs_dump: np.ndarray,
     x_out: float | None = None,
+    *,
+    dx0_per_j: np.ndarray | None = None,
+    stretch_max: float = 1.25,
 ) -> np.ndarray:
     """Dump H: curved west edge → x_out with dump_xs fractional packing (no TE cliff).
 
     pts shape (n_x+1, n_y, 2). Each ray keeps constant y; axial nodes follow
     dump_xs fractions mapped onto [x_west, x_out].
+
+    Optional ``dx0_per_j``: per-ray first Δx matched to the local west-adjacent
+    cell (south/north H last Δx or O outer dn_o). Same ni for all rays; growth
+    ≤ stretch_max so the TE collar→dump seam stays ≤~2:1 without a TE-plane
+    AABB east wall.
     """
     west = np.asarray(west, dtype=float).reshape(-1, 2)
     xs_dump = np.asarray(xs_dump, dtype=float).reshape(-1)
@@ -193,10 +201,24 @@ def _dump_block_from_west(
     ni = int(xs_dump.shape[0] - 1)
     nj = int(west.shape[0])
     pts = np.zeros((ni + 1, nj, 2), dtype=float)
+    r_cap = min(max(float(stretch_max), 1.0), 1.25)
+    use_local = dx0_per_j is not None and int(np.asarray(dx0_per_j).reshape(-1).shape[0]) == nj
+    dx0_arr = np.asarray(dx0_per_j, dtype=float).reshape(-1) if use_local else None
     for j in range(nj):
         x0 = float(west[j, 0])
         y0 = float(west[j, 1])
-        xs_j = x0 + frac * (x_hi - x0)
+        L = max(x_hi - x0, 1e-15)
+        if use_local:
+            # Geometric pack toward TE collar: first cell ≈ local west Δx.
+            d0 = max(float(dx0_arr[j]), 1e-12)
+            # Feasible band: [L*(r_cap-1)/(r_cap^n-1), L/n]
+            d_min = L * (r_cap - 1.0) / (r_cap ** max(ni, 1) - 1.0) if r_cap > 1.0 + 1e-12 else L / max(ni, 1)
+            d_max = L / max(ni, 1)
+            d0 = min(max(d0, d_min), d_max)
+            r_j = _pack_r_for_d0(L, ni, d0, r_max=r_cap)
+            xs_j = np.array([x0 + L * _stretch(k, ni, r_j) for k in range(ni + 1)], dtype=float)
+        else:
+            xs_j = x0 + frac * (x_hi - x0)
         xs_j[0] = x0
         xs_j[-1] = x_hi
         pts[:, j, 0] = xs_j
@@ -323,6 +345,16 @@ def _le_x_weight(x: float, xmin: float, xmax: float, le_cluster: float) -> float
     return 1.0 + (r - 1.0) * (t * t)
 
 
+def _te_x_weight(x: float, xmin: float, xmax: float, te_cluster: float) -> float:
+    """Weight >=1 peaking at TE (max x). te_cluster=1 → uniform."""
+    r = max(float(te_cluster), 1.0)
+    if abs(r - 1.0) < 1e-12:
+        return 1.0
+    span = max(xmax - xmin, 1e-16)
+    t = max(0.0, min(1.0, (float(x) - xmin) / span))  # 1 at TE, 0 at LE
+    return 1.0 + (r - 1.0) * (t * t)
+
+
 def _resample_at_fractions(
     chain: list[tuple[float, float]], fracs: list[float]
 ) -> list[tuple[float, float]]:
@@ -388,6 +420,51 @@ def _resample_le_cluster(
         target_s = s[j] + t * (s[j + 1] - s[j])
         out.append(_interp_at_arclength(chain, s, total, target_s))
     return out
+
+def _resample_te_cluster(
+    chain: list[tuple[float, float]],
+    n_seg: int,
+    te_cluster: float = 1.0,
+    *,
+    xmin: float | None = None,
+    xmax: float | None = None,
+) -> list[tuple[float, float]]:
+    """Arc-length sample with streamwise density peaking at TE (max x)."""
+    if n_seg < 1 or len(chain) < 2:
+        return list(chain)
+    r = max(float(te_cluster), 1.0)
+    if abs(r - 1.0) < 1e-12:
+        return _resample(chain, n_seg)
+    xs = [p[0] for p in chain]
+    x0 = float(xmin) if xmin is not None else float(min(xs))
+    x1 = float(xmax) if xmax is not None else float(max(xs))
+    s, total = _chain_arclength(chain)
+    wlen = [0.0]
+    acc = 0.0
+    for i in range(1, len(chain)):
+        ds = s[i] - s[i - 1]
+        xm = 0.5 * (chain[i][0] + chain[i - 1][0])
+        acc += ds * _te_x_weight(xm, x0, x1, r)
+        wlen.append(acc)
+    wtot = wlen[-1] if wlen[-1] > 0 else 1.0
+    out: list[tuple[float, float]] = []
+    for k in range(n_seg + 1):
+        target_w = wtot * k / n_seg
+        if target_w <= 0:
+            out.append(chain[0])
+            continue
+        if target_w >= wtot:
+            out.append(chain[-1])
+            continue
+        j = 0
+        while j < len(wlen) - 1 and wlen[j + 1] < target_w:
+            j += 1
+        span_w = wlen[j + 1] - wlen[j] or 1e-16
+        t = (target_w - wlen[j]) / span_w
+        target_s = s[j] + t * (s[j + 1] - s[j])
+        out.append(_interp_at_arclength(chain, s, total, target_s))
+    return out
+
 
 
 def _chain_ccw(pts: list[tuple[float, float]], i0: int, i1: int) -> list[tuple[float, float]]:
@@ -1491,8 +1568,15 @@ def _resample_xy(
     *,
     xmin: float | None = None,
     xmax: float | None = None,
+    te_cluster: float = 1.0,
 ) -> np.ndarray:
     pts = [tuple(ring[i]) for i in chain_idx]
+    te_r = max(float(te_cluster), 1.0)
+    if te_r > 1.0 + 1e-12:
+        return np.array(
+            _resample_te_cluster(pts, n_seg, te_r, xmin=xmin, xmax=xmax),
+            dtype=float,
+        )
     if max(float(le_cluster), 1.0) <= 1.0 + 1e-12:
         return np.array(_resample(pts, n_seg), dtype=float)
     return np.array(
@@ -1580,6 +1664,7 @@ def build_offset_oh(
     d_o: float,
     n_out_x: int | None = None,
     le_cluster: float = 1.0,
+    te_cluster: float = 2.0,
     inlet_stretch: float | None = None,
     dump_xs: np.ndarray | None = None,
     dump_rx: float | None = None,
@@ -1625,14 +1710,24 @@ def build_offset_oh(
     )
 
     le_r = max(float(le_cluster), 1.0)
+    te_r = max(float(te_cluster), 1.0)
     if le_r > 1.0 + 1e-12:
         notes.append(
             f"streamwise LE cluster le_cluster={le_r:.3g} on wall/offset arcs "
             "(Δs biased to min-x per arc; O wall-normal stretch unchanged)"
         )
+    if te_r > 1.0 + 1e-12:
+        notes.append(
+            f"streamwise TE cluster te_cluster={te_r:.3g} on east tip/stem arcs "
+            "(Δs biased to max-x / TE collar; O wall-normal stretch unchanged)"
+        )
 
     def _side(ring, idx, nseg):
         return _resample_xy(idx, ring, nseg, le_r)
+
+    def _side_te(ring, idx, nseg):
+        # East tip/stem: TE collar density (not LE weight).
+        return _resample_xy(idx, ring, nseg, 1.0, te_cluster=te_r)
 
     # 45° |dx|=|dy| corners on the outer back — not 22/78 inner or 0.72 ymax.
     # Inner is a shallow arc (tangents ≲30°): do NOT split it into west/north/east
@@ -1640,7 +1735,8 @@ def build_offset_oh(
     kSE, kE, kW, kSW = _outer_dxdy_corners(outer_idx, outer_hi, max_dx_dy=1.0)
     n_inner = int(n_cyc)
     n_fill_h = max(int(n_fill), 4)
-    n_tip = max(6, int(n_out) // 2)
+    # TE collar budget: tip wraps feed south_o east approach (H last Δx).
+    n_tip = max(8, int(n_out) // 2)
 
     iLt = int(spl["iLt"])
     iRt = int(spl["iRt"])
@@ -1662,8 +1758,8 @@ def build_offset_oh(
     met_cav = _interp_arc_xs(inner_hi[inner_idx], xs_blade)
     met_north = _interp_arc_xs(inner_hi[outer_idx[kE : kW + 1]], xs_north)
     # CCW ring: Lt → inner → Rt → east tip/stem → north (Rt-side → Lt-side) → west stem/tip
-    met_east_tip = _side(inner_hi, outer_idx[: kSE + 1], n_tip)
-    met_east_stem = _side(inner_hi, outer_idx[kSE : kE + 1], n_out)
+    met_east_tip = _side_te(inner_hi, outer_idx[: kSE + 1], n_tip)
+    met_east_stem = _side_te(inner_hi, outer_idx[kSE : kE + 1], n_out)
     met_west_stem = _side(inner_hi, outer_idx[kW : kSW + 1], n_in)
     met_west_tip = _side(inner_hi, outer_idx[kSW :], n_tip)
     # north metal is kW→kE in +x; CCW walk is kE→kW
@@ -1942,11 +2038,20 @@ def build_offset_oh(
     # Dump west = south H east + O east stem + north H east (collar silhouette).
     # Removes h_east→x_cart AABB cliff. dump_xs_1c packing from TE collar.
     # (Full-pitch dump-west can still look bright on preview when stem≈vertical.)
+    # IMPORTANT: dump axial packing must be SHARED across all rays so top/bottom
+    # translational cyclics keep matching face areas (per-ray firstΔx broke cyclics).
     south_e = south_e.copy()
     north_e = north_e.copy()
     south_e[-1] = east_s2n[0]
     north_e[0] = east_s2n[-1]
     west_dump = _join_polylines(south_e, east_s2n, north_e)
+    dx_s = abs(float(h_south[-1, 0, 0] - h_south[-2, 0, 0])) if h_south.shape[0] >= 2 else dn_o
+    dx_n = abs(float(h_north[-1, 0, 0] - h_north[-2, 0, 0])) if h_north.shape[0] >= 2 else dn_o
+    notes.append(
+        f"dump west-adjacent Δx: dx_s/dn_o={dx_s/max(dn_o,1e-12):.2f} "
+        f"dx_n/dn_o={dx_n/max(dn_o,1e-12):.2f} (uniform dump_xs first≈dn_o; "
+        f"refine east tip/stem if ratio≫2 — do NOT per-ray pack dump)"
+    )
     h_dump = _pos_block(_dump_block_from_west(west_dump, xs_dump, x_out), "dump", keep_edges=True)
     snap = [(te_w_old, te_w), (te_o_old, te_o)]
     h_rest = [
@@ -1957,7 +2062,8 @@ def build_offset_oh(
     notes.append(
         "H-blocks: vertical rays cavity+south and back→y_top (pack→O, growth≤1.25); "
         "inlet stems horizontal (pack→LE); dump from TE collar silhouette with "
-        "dump_xs_1c first_Δx≈dn_o. Soft red joins — no chalk-line size cliffs. "
+        "dump_xs_1c first_Δx≈dn_o (uniform axial pack — cyclic-safe). "
+        "Soft red joins — no chalk-line size cliffs. "
         "No h_east→x_cart AABB east wall / Cartesian cliff at TE."
     )
     notes.append("H TE nodes snapped to wake chord (unkinked).")
@@ -2889,6 +2995,7 @@ def build_body_fitted_oh_shock(
     d_o,
     n_out_x=None,
     le_cluster=2.5,
+    te_cluster=2.0,
     inlet_stretch=None,
     beta1_deg=65.0,
     beta2_deg=-65.0,
@@ -2911,7 +3018,8 @@ def build_body_fitted_oh_shock(
     n_pw = max(int(n_pitchwise_throat), int(n_fill), 8)
     n_fill_use = n_pw
     n_in_use = max(int(n_in), 8)
-    n_out_use = max(int(n_out), int(te_angular_min) + 8, 18)
+    # TE collar: raise east sector floor so SS+PS near TE can reach ~40–50.
+    n_out_use = max(int(n_out), int(te_angular_min) + 8, 28)
     n_cyc_use = max(int(n_cyc), n_pw, 24)
     r_wall = max(float(stretch), 1.0)
     r_inlet = max(float(inlet_stretch if inlet_stretch is not None else 1.12), 1.0)
@@ -2949,6 +3057,7 @@ def build_body_fitted_oh_shock(
         d_o=float(d_o),
         n_out_x=int(n_dump),
         le_cluster=max(float(le_cluster), 1.0),
+        te_cluster=max(float(te_cluster), 1.0),
         inlet_stretch=r_inlet,
         dump_xs=xs_full,
         dump_rx=rx,
@@ -3317,6 +3426,7 @@ def write_polymesh(
             d_o=d_o,
             n_out_x=n_out_x,
             le_cluster=le_cluster,
+            te_cluster=max(float(cfd.get("te_cluster", 2.0) or 2.0), 1.0),
             inlet_stretch=inlet_stretch,
             beta1_deg=beta1,
             beta2_deg=beta2,

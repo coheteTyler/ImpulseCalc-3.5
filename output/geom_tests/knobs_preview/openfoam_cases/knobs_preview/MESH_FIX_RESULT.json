@@ -1,0 +1,76 @@
+{
+  "verdict": "FAIL",
+  "label": "mesh-writer-stop",
+  "timestamp_ET": "2026-09-21 18:25:28 ET",
+  "case": "output/geom_tests/knobs_preview/openfoam_cases/knobs_preview",
+  "plan": "output/geom_tests/knobs_preview/openfoam_cases/knobs_preview/MESH_FIX_PLAN.md",
+  "before": {
+    "n_cells": 12934,
+    "OH_dn_ratio_TE_seam": 8.4,
+    "TE_collar_SS_PS_sum_0p15c": [
+      17,
+      15,
+      32
+    ],
+    "checkMesh": "Mesh OK, max non-ortho 74.6\u00b0, 14 faces >70\u00b0, skew 2.21",
+    "yplus_max": 1.8,
+    "n_east": 18
+  },
+  "after_one_write": {
+    "n_cells": 14744,
+    "n_around": 177,
+    "n_east": 28,
+    "te_cluster": 2.0,
+    "TE_collar_SS_PS_sum_0p15c": [
+      25,
+      18,
+      43
+    ],
+    "dx_s_over_dn_o_readme": 3.5,
+    "dx_n_over_dn_o_readme": 20.23,
+    "OH_dn_ratio_at_x_TE_col": {
+      "south_strip_maxR": 1.136,
+      "TE_wake_maxR": 2.961,
+      "TE_wake_medR": 1.136,
+      "north_cyclic_maxR": 5.254,
+      "note": "South 8.4\u21921.14 via per-ray dump; TE wake 2.96 (trending); but per-ray broke cyclics"
+    },
+    "Hy_over_pitch": 1.0,
+    "cyclic_nFaces": {
+      "bottom": 123,
+      "top": 123
+    },
+    "sample_TE_0p2c_cells": 97,
+    "normals_local_check": {
+      "pass": true,
+      "bad_faces": 0,
+      "max_neg_depth": 0.0
+    },
+    "first_cell_m": 6.06e-07,
+    "checkMesh": {
+      "rc": 1,
+      "result": "FATAL before geometry checks",
+      "error": "cyclicPolyPatch face 82 area does not match neighbour by 140.96% patch:bottom fc~(0.01037,-0.004057) vs top~(0.01041,+0.004057). Cause: per-ray dump first\u0394x made axial node spacing differ by y \u2192 translational cyclic face areas no longer match.",
+      "failed_checks": "n/a (abort)"
+    }
+  },
+  "gates": {
+    "checkMesh_failed_checks_0": false,
+    "OH_jump_le_2": "partial \u2014 south OK (1.14), TE wake 2.96 (not \u226b2, better than 8.4), but mesh unusable",
+    "TE_collar_40_50": true,
+    "normals": true,
+    "vol_ok_leftover_cyclics": false,
+    "sample_line_fluid": true,
+    "no_regression_vs_prior": false
+  },
+  "writer_changes_attempted": [
+    "te_cluster=2 on east tip/stem + n_out floor 18\u219228 + n_tip bump (KEPT in impulsecalc3/mesh.py)",
+    "per-ray dump first\u0394x matched to local west cell (REVERTED \u2014 broke translational cyclics)"
+  ],
+  "writer_state_now": "TE collar bump retained (n_out\u226528, te_cluster=2). Per-ray dump call site reverted to uniform dump_xs_1c (cyclic-safe). On-disk polyMesh still from the failed per-ray write \u2014 do NOT foam-solve it. Hard stop: no second remesh.",
+  "why_stop": "One repair write produced a mesh that fails checkMesh (cyclic area mismatch). Steering forbids shipping a mesh that breaks full-pitch translational cyclics. Per-ray dump grading rejected; \u22642:1 seam with uniform dump_xs needs more east-tip refinement (dx_s/dn_o was 3.5 after TE bump alone \u2014 still >2 at O stem if dump first=dn_o) or a cyclic-safe buffer that keeps identical axial packing on top/bottom.",
+  "website_mesh_path": "serve._run_mesh \u2192 write_preview(write_case) succeeded (n_cells=14744, README notes present); failed afterward on missing matplotlib for triangle_png. Mesh write itself ran. checkMesh via docker confirmed FATAL cyclic mismatch.",
+  "FAIL_json": "output/geom_tests/knobs_preview/openfoam_cases/knobs_preview/FAIL.json",
+  "sha_pushed": null,
+  "no_foam_solve": true
+}

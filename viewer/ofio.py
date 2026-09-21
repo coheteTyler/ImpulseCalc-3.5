@@ -147,17 +147,76 @@ def _parse_nonuniform_vector(text: str, n_expect: int | None = None) -> list[tup
     return out
 
 
+def _foam_is_binary(raw: bytes) -> bool:
+    head = raw[:1200]
+    return b"format      binary" in head or b"format\tbinary" in head or b"format binary" in head
+
+
+def _parse_binary_scalar(raw: bytes, n_expect: int | None = None) -> list[float] | None:
+    import struct
+
+    m = re.search(rb"internalField\s+nonuniform\s+List<scalar>\s*(\d+)\s*\(", raw)
+    if not m:
+        m2 = re.search(rb"internalField\s+uniform\s+([^\s;]+)", raw)
+        if m2:
+            v = float(m2.group(1))
+            n = n_expect or 1
+            return [v] * n
+        return None
+    n = int(m.group(1))
+    start = m.end()
+    while start < len(raw) and raw[start] in (9, 10, 13, 32):
+        start += 1
+    need = n * 8
+    chunk = raw[start : start + need]
+    if len(chunk) < need:
+        return None
+    return list(struct.unpack("<" + "d" * n, chunk))
+
+
+def _parse_binary_vector(
+    raw: bytes, n_expect: int | None = None
+) -> list[tuple[float, float, float]] | None:
+    import struct
+
+    m = re.search(rb"internalField\s+nonuniform\s+List<vector>\s*(\d+)\s*\(", raw)
+    if not m:
+        m2 = re.search(rb"internalField\s+uniform\s+\(([^)]+)\)", raw)
+        if m2:
+            nums = [float(x) for x in m2.group(1).split()]
+            n = n_expect or 1
+            tup = (nums[0], nums[1], nums[2] if len(nums) > 2 else 0.0)
+            return [tup] * n
+        return None
+    n = int(m.group(1))
+    start = m.end()
+    while start < len(raw) and raw[start] in (9, 10, 13, 32):
+        start += 1
+    need = n * 3 * 8
+    chunk = raw[start : start + need]
+    if len(chunk) < need:
+        return None
+    flat = struct.unpack("<" + "d" * (n * 3), chunk)
+    return [(flat[i], flat[i + 1], flat[i + 2]) for i in range(0, n * 3, 3)]
+
+
 def read_scalar_field(path: Path, n_cells: int | None = None) -> list[float] | None:
     if not path.is_file():
         return None
-    text = path.read_text(encoding="utf-8", errors="replace")
+    raw = path.read_bytes()
+    if _foam_is_binary(raw):
+        return _parse_binary_scalar(raw, n_cells)
+    text = raw.decode("utf-8", errors="replace")
     return _parse_nonuniform_scalar(text, n_cells)
 
 
 def read_vector_field(path: Path, n_cells: int | None = None) -> list[tuple[float, float, float]] | None:
     if not path.is_file():
         return None
-    text = path.read_text(encoding="utf-8", errors="replace")
+    raw = path.read_bytes()
+    if _foam_is_binary(raw):
+        return _parse_binary_vector(raw, n_cells)
+    text = raw.decode("utf-8", errors="replace")
     return _parse_nonuniform_vector(text, n_cells)
 
 

@@ -1,0 +1,13 @@
+{
+  "t_fields": 6.4913586e-05,
+  "x_le": 6.9378365e-05,
+  "x_te": 0.0098931283,
+  "x1": -0.000930621635,
+  "Wy1": 879.3910665610939,
+  "w_Ft": 593971.1058602862,
+  "Ft_N": 22.475821850000003,
+  "best_offset_c": 0.5,
+  "best_residual": 0.0013950912326979445,
+  "code_station": "TE+0.2c",
+  "note": "Wy scan only \u2014 no remesh/no new foam; residual still >8% at code station"
+}
