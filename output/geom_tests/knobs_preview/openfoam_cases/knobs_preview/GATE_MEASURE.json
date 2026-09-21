@@ -1,0 +1,23 @@
+{
+  "n_cells": 15148,
+  "failed_checks": 0,
+  "OH_R_dump_seam": {
+    "max": 3.140597549570262,
+    "med": 1.249999997982226,
+    "p90": 1.2500000018446116,
+    "n": 1408
+  },
+  "OH_R_TE_wake_column": {
+    "max": 2.423821529451954,
+    "med": 1.2499999984960501,
+    "p90": 1.2500000012026036,
+    "n": 612
+  },
+  "dump_first_dx_over_dn_o": 1.0,
+  "north_pack_engaged": true,
+  "cyclic_nFaces": {
+    "bottom": 122,
+    "top": 122
+  },
+  "Gate0_live_Mesh_succeeds": true
+}

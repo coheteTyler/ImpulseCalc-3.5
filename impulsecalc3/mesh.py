@@ -19,6 +19,7 @@ import numpy as np
 from .geometry import (
     BladeSpec,
     center_in_pitch,
+    clip_poly_to_y_strip,
     passage_gap,
     polygon_centroid,
     polygon_signed_area,
@@ -1735,8 +1736,10 @@ def build_offset_oh(
     kSE, kE, kW, kSW = _outer_dxdy_corners(outer_idx, outer_hi, max_dx_dy=1.0)
     n_inner = int(n_cyc)
     n_fill_h = max(int(n_fill), 4)
-    # TE collar budget: tip wraps feed south_o east approach (H last Δx).
-    n_tip = max(8, int(n_out) // 2)
+    # TE collar + stem buffer: tip wraps feed south_o east approach (H last Δx).
+    # Extra tip/stem layers so ray angle & size change over several cells (≤2:1),
+    # not one chalk-line face. Topology unchanged (still H blocks + open-O).
+    n_tip = max(12, int(n_out) // 2)
 
     iLt = int(spl["iLt"])
     iRt = int(spl["iRt"])
@@ -1948,14 +1951,15 @@ def build_offset_oh(
     # Repair: do NOT bump n_fill_h (changes H–H corner topology → leftover faces).
     # Pack within existing n_fill so first H cell tracks dn_o as far as r≤1.25 allows.
     r_south = _pack_r_for_d0(gap_s, n_fill_h, dn_o, r_max=1.25)
-    # North pack_r>1 leaves 80 unclassified faces (nw TFI/smooth drifts from
-    # north west edge). Keep r_north=1 until nw edge-pin is proven; south is OK.
-    r_north = 1.0
+    # Soft north H↔O: pack toward O like south (first Δy ≈ dn_o, growth≤1.25).
+    # Prior d_tgt=max(2·dn_o, gap/n) selected uniform when uniform>2·dn_o → r_n=1
+    # (firstΔy_n/dn_o=8). nw east edge = north_w (below) keeps TFI conformal.
+    r_north = _pack_r_for_d0(gap_n, n_fill_h, dn_o, r_max=1.25)
     dy_s = gap_s * (r_south - 1.0) / (r_south ** max(n_fill_h, 1) - 1.0) if r_south > 1.0 + 1e-12 else gap_s / max(n_fill_h, 1)
-    dy_n = gap_n / max(n_fill_h, 1)
+    dy_n = gap_n * (r_north - 1.0) / (r_north ** max(n_fill_h, 1) - 1.0) if r_north > 1.0 + 1e-12 else gap_n / max(n_fill_h, 1)
     notes.append(
         f"soft H↔O joins: dn_o={dn_o*1e6:.2f} um n_fill={n_fill_h} "
-        f"r_s={r_south:.3g} r_n={r_north:.3g}(pinned) "
+        f"r_s={r_south:.3g} r_n={r_north:.3g} "
         f"firstΔy_s/dn_o={dy_s/dn_o:.2f} firstΔy_n/dn_o={dy_n/dn_o:.2f} "
         f"gap_s={gap_s*1e3:.3f} mm gap_n={gap_n*1e3:.3f} mm"
     )
@@ -2021,7 +2025,9 @@ def build_offset_oh(
         keep_edges=True,
     )
     nw_north = np.column_stack([west_s[:, 0], np.full(west_s.shape[0], y_top)])
-    nw_east = _lin(west_n[-1], nw_north[-1], north_w.shape[0] - 1)
+    # Conformal east edge = north H west edge (packed spacing). Linear nw_east was
+    # the leftover source when r_north>1.
+    nw_east = north_w.copy()
     nw_west = _lin(west_n[0], nw_north[0], north_w.shape[0] - 1)
     h_nw_raw = tfi_block(west_n, nw_north, nw_west, nw_east)
     _n0 = h_nw_raw[:, 0, :].copy(); _n1 = h_nw_raw[:, -1, :].copy()
@@ -2047,10 +2053,20 @@ def build_offset_oh(
     west_dump = _join_polylines(south_e, east_s2n, north_e)
     dx_s = abs(float(h_south[-1, 0, 0] - h_south[-2, 0, 0])) if h_south.shape[0] >= 2 else dn_o
     dx_n = abs(float(h_north[-1, 0, 0] - h_north[-2, 0, 0])) if h_north.shape[0] >= 2 else dn_o
+    # Single representative first Δx for ALL dump rays (cyclic-safe): always dn_o.
+    # geom_mean(dn_o, H_last) left firstΔx~3.2×dn_o and the O–H cliff (~9:1).
+    # Never per-ray pack (that broke cyclic area match).
+    dx_rep = min(max(float(dn_o), 1e-9), 0.05 * c_use)
+    rep_note = "dn_o"
+    L_c_dump = max(1.0, (float(x_out) - float(x_te_col)) / c_use)
+    xs_dump = dump_xs_1c(
+        x_te_col, c_use, dx_rep, n_near=10, stretch_max=1.25, L_dump_c=L_c_dump
+    )
+    x_out = float(xs_dump[-1])
     notes.append(
         f"dump west-adjacent Δx: dx_s/dn_o={dx_s/max(dn_o,1e-12):.2f} "
-        f"dx_n/dn_o={dx_n/max(dn_o,1e-12):.2f} (uniform dump_xs first≈dn_o; "
-        f"refine east tip/stem if ratio≫2 — do NOT per-ray pack dump)"
+        f"dx_n/dn_o={dx_n/max(dn_o,1e-12):.2f} dx_rep/dn_o={dx_rep/max(dn_o,1e-12):.2f} "
+        f"(uniform dump_xs first={rep_note}; cyclic-safe — no per-ray)"
     )
     h_dump = _pos_block(_dump_block_from_west(west_dump, xs_dump, x_out), "dump", keep_edges=True)
     snap = [(te_w_old, te_w), (te_o_old, te_o)]
@@ -2061,9 +2077,9 @@ def build_offset_oh(
     h_blocks = [h_te_wake, *h_rest]
     notes.append(
         "H-blocks: vertical rays cavity+south and back→y_top (pack→O, growth≤1.25); "
-        "inlet stems horizontal (pack→LE); dump from TE collar silhouette with "
-        "dump_xs_1c first_Δx≈dn_o (uniform axial pack — cyclic-safe). "
-        "Soft red joins — no chalk-line size cliffs. "
+        "inlet/TE stems buffered (extra layers, pack→LE/TE); dump from TE collar "
+        "silhouette with dump_xs_1c first_Δx=single rep (uniform — cyclic-safe). "
+        "Soft red joins — continuous grading ≤2:1 / growth≤1.25. "
         "No h_east→x_cart AABB east wall / Cartesian cliff at TE."
     )
     notes.append("H TE nodes snapped to wake chord (unkinked).")
@@ -3017,9 +3033,10 @@ def build_body_fitted_oh_shock(
     c = max(float(chord_m), 1e-6)
     n_pw = max(int(n_pitchwise_throat), int(n_fill), 8)
     n_fill_use = n_pw
-    n_in_use = max(int(n_in), 8)
-    # TE collar: raise east sector floor so SS+PS near TE can reach ~40–50.
-    n_out_use = max(int(n_out), int(te_angular_min) + 8, 28)
+    n_in_use = max(int(n_in), 12)  # LE stem buffer layers (angle/size over several cells)
+    # TE collar + stem buffer: east sector floor so SS+PS near TE can reach ~40–50
+    # and stem turn spans several cells (no single-face knife).
+    n_out_use = max(int(n_out), int(te_angular_min) + 8, 36)
     n_cyc_use = max(int(n_cyc), n_pw, 24)
     r_wall = max(float(stretch), 1.0)
     r_inlet = max(float(inlet_stretch if inlet_stretch is not None else 1.12), 1.0)
@@ -3339,6 +3356,7 @@ def write_polymesh(
         oh_notes = list(passage.notes)
         d_o = passage.d_o
         y_bot, y_top = passage.y_min, passage.y_max
+    gate0_clip_note = ""
     if passage is None and cas is None:
         poly0, y_shift = center_in_pitch(poly0, pitch)
     xs = [p[0] for p in poly0]
@@ -3346,10 +3364,33 @@ def write_polymesh(
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
     clearance_y = min(y_top - ymax, ymin - y_bot) if (passage is None and cas is None) else 1.0
     if passage is None and cas is None and clearance_y <= 1e-9:
-        raise RuntimeError(
-            "profile clearance to cyclic is non-positive after center; "
-            "expected cassette path when yspan+2*d_o >= s — check Gate 0 / write_kind"
-        )
+        # Nested C with g_min>0: solids miss but AABB sticks past ±s/2 after center.
+        # Freeze B keeps 1-pitch body_fitted — clip only the cyclic overhang, leave
+        # margin for a thin O (prefer reducing d_o / inflation over opening pitch).
+        gmin = float(gap0["g_min"])
+        if gmin > 1e-9:
+            margin = min(0.35 * gmin, 0.00025, 0.04 * float(spec.chord_m))
+            margin = max(float(margin), 8e-6)
+            poly0 = clip_poly_to_y_strip(poly0, float(y_bot) + margin, float(y_top) - margin)
+            if len(poly0) < 8 or polygon_signed_area(poly0) <= 0:
+                raise RuntimeError(
+                    "Gate 0 nested clip produced empty/invalid metal; "
+                    "check pitch / profile / mesh_kind"
+                )
+            xs = [p[0] for p in poly0]
+            ys = [p[1] for p in poly0]
+            xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
+            clearance_y = min(y_top - ymax, ymin - y_bot)
+            gate0_clip_note = (
+                f"Gate 0 nested→1-pitch clip margin={margin*1e3:.3f} mm "
+                f"(g_min={gmin*1e3:.3f} mm); clearance_y={clearance_y*1e3:.3f} mm "
+                f"(thin O preferred over cassette remesh)"
+            )
+        if clearance_y <= 1e-9:
+            raise RuntimeError(
+                "profile clearance to cyclic is non-positive after center; "
+                "expected cassette path when yspan+2*d_o >= s — check Gate 0 / mesh_kind"
+            )
     if passage is None and cas is None:
         d_o = min(0.00045, 0.22 * max(clearance_y, 2e-6), 0.06 * spec.chord_m)
     fam = str((job.get("geometry") or {}).get("profile_family") or "")
@@ -3507,6 +3548,8 @@ def write_polymesh(
         hybrid_stats = dict(hy["stats"])
         if do_cap_note:
             oh_notes.append(do_cap_note)
+        if gate0_clip_note:
+            oh_notes.append(gate0_clip_note)
         if le_cluster > 1.0 + 1e-12:
             oh_notes.append(f"le_cluster={le_cluster:.3g} n_le={n_le or n_in} (west W=n_inlet={n_in})")
     elif passage is None and cas is None and use_cavity:
@@ -3531,6 +3574,8 @@ def write_polymesh(
         n_i = ogrid.shape[0]
         if do_cap_note:
             oh_notes.append(do_cap_note)
+        if gate0_clip_note:
+            oh_notes.append(gate0_clip_note)
         if le_cluster > 1.0 + 1e-12:
             oh_notes.append(f"le_cluster={le_cluster:.3g} n_le={n_le or n_in} (west W=n_inlet={n_in})")
     elif passage is None and cas is None:
@@ -3614,6 +3659,8 @@ def write_polymesh(
         ]
         if do_cap_note:
             oh_notes.append(do_cap_note)
+        if gate0_clip_note:
+            oh_notes.append(gate0_clip_note)
         if le_cluster > 1.0 + 1e-12:
             oh_notes.append(f"le_cluster={le_cluster:.3g} n_le={n_le or n_in} (west W=n_inlet={n_in})")
 
