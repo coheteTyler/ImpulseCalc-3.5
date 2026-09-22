@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 import subprocess
 from pathlib import Path
 
@@ -248,7 +249,31 @@ def reclaim_case_ownership(case_dir: Path) -> list[str]:
     repaired: list[str] = []
     uid, gid = os.getuid(), os.getgid()
     # Disposable OF set files — safe to wipe before every mesh rewrite.
+    # On overlay ghosts (OSError 39 / weird), rename sets or polyMesh aside so
+    # the next wipe/mkdir is not blocked by a live ghost name.
     sets = case_dir / "constant" / "polyMesh" / "sets"
+    poly = case_dir / "constant" / "polyMesh"
+
+    def _bury(path: Path) -> bool:
+        """Rename path aside; return True if gone from live name."""
+        if not path.exists() and not path.is_symlink():
+            try:
+                parent = path.parent
+                if not (parent.is_dir() and path.name in os.listdir(parent)):
+                    return True
+            except OSError:
+                return True
+        dead = path.with_name(path.name + ".dead." + str(int(time.time())))
+        try:
+            path.rename(dead)
+        except OSError:
+            return False
+        try:
+            shutil.rmtree(dead, ignore_errors=True)
+        except Exception:
+            pass
+        return not path.exists()
+
     if sets.exists():
         try:
             shutil.rmtree(sets)
@@ -271,9 +296,21 @@ def reclaim_case_ownership(case_dir: Path) -> list[str]:
                         shutil.rmtree(sets)
                     except Exception:
                         pass
-                repaired.append(str(sets) + " (chown+rm)")
+                if sets.exists():
+                    if _bury(sets) or _bury(poly):
+                        repaired.append(str(sets) + " (chown+bury)")
+                    else:
+                        repaired.append(str(sets) + " (chown+rm)")
+                else:
+                    repaired.append(str(sets) + " (chown+rm)")
             else:
                 raise
+        except OSError:
+            # ENOTEMPTY / overlay ghost — bury sets or whole polyMesh
+            if _bury(sets):
+                repaired.append(str(sets) + " (bury)")
+            elif _bury(poly):
+                repaired.append(str(poly) + " (bury)")
     # Any other root-owned leaves under polyMesh — chown tree once.
     poly = case_dir / "constant" / "polyMesh"
     if poly.is_dir():

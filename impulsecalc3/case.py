@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import math
 import textwrap
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -634,6 +636,59 @@ def write_case(
         lock.release()
 
 
+
+def _rmtree_or_bury(path: Path) -> None:
+    """Remove a directory; on overlay ghost / ENOTEMPTY, rename aside so wipe can proceed.
+
+    Concurrent Mesh wipe mid-foam can leave ``constant/polyMesh/sets`` as a ghost
+    overlay entry (``d?????????``, ``stat`` fails, ``listdir`` still sees it). Plain
+    ``shutil.rmtree`` then raises ``OSError: [Errno 39] Directory not empty``. Renaming
+    the parent aside clears the live name so the next write can ``mkdir`` fresh.
+    """
+    import shutil
+
+    path = Path(path)
+    if not path.exists() and not path.is_symlink():
+        # Ghost: exists() False but parent listdir may still list the name.
+        # Try rename by name if the path string still appears under parent.
+        try:
+            parent = path.parent
+            if parent.is_dir() and path.name in os.listdir(parent):
+                dead = path.with_name(path.name + ".dead." + str(int(time.time())))
+                try:
+                    path.rename(dead)
+                except OSError:
+                    pass
+                else:
+                    try:
+                        shutil.rmtree(dead, ignore_errors=True)
+                    except Exception:
+                        pass
+        except OSError:
+            pass
+        return
+
+    try:
+        shutil.rmtree(path, ignore_errors=False)
+    except OSError:
+        pass
+
+    if path.exists() or path.is_symlink():
+        dead = path.with_name(path.name + ".dead." + str(int(time.time())))
+        try:
+            path.rename(dead)
+        except OSError as e:
+            raise OSError(
+                f"overlay ghost blocks wipe of {path} (errno {getattr(e, 'errno', '?')}); "
+                f"rename-aside also failed. Bury the ghost under the case dir manually "
+                f"(e.g. mv {path.name} {path.name}.dead.*) then Mesh again. Underlying: {e}"
+            ) from e
+        try:
+            shutil.rmtree(dead, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def _write_case_unlocked(
     case_dir: Path,
     job: dict[str, Any],
@@ -643,17 +698,34 @@ def _write_case_unlocked(
 ) -> tuple[MeshBuild, float]:
     case_dir = Path(case_dir)
     if case_dir.exists():
-        # only wipe generated trees we own
-        import shutil
-
+        # only wipe generated trees we own (bury overlay ghosts on OSError 39)
         for sub in ("0", "constant", "system"):
             p = case_dir / sub
-            if p.exists():
-                shutil.rmtree(p)
+            # exists() may be False for ghosts still listed under case_dir
+            try:
+                names = set(os.listdir(case_dir))
+            except OSError:
+                names = set()
+            if p.exists() or p.name in names:
+                _rmtree_or_bury(p)
+        # Best-effort: bury postProcessing ghosts and old *.dead.* clutter (ignore errors)
+        try:
+            for name in list(os.listdir(case_dir)):
+                if name == "postProcessing" or ".dead." in name:
+                    p = case_dir / name
+                    try:
+                        _rmtree_or_bury(p)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
         for name in ("README.txt", "impulsecalc3_case_meta.json", "log.checkMesh", "log.rhoCentralFoam"):
             p = case_dir / name
             if p.exists():
-                p.unlink()
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
     (case_dir / "system").mkdir(parents=True, exist_ok=True)
     (case_dir / "constant").mkdir(parents=True, exist_ok=True)
     (case_dir / "0").mkdir(parents=True, exist_ok=True)

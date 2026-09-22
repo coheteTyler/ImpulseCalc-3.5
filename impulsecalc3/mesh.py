@@ -3968,6 +3968,7 @@ def write_polymesh(
         sets = mesh_dir / "sets"
         if sets.exists():
             import shutil as _sh
+            import time as _time
             try:
                 _sh.rmtree(sets)
             except PermissionError as e:
@@ -3975,6 +3976,24 @@ def write_polymesh(
                     f"polyMesh/sets not writable ({sets}); docker checkMesh left root-owned files. "
                     f"Run reclaim or chown, then Mesh again. Underlying: {e}"
                 ) from e
+            except OSError:
+                # Overlay ghost / ENOTEMPTY — bury sets or polyMesh so mkdir can proceed.
+                for target in (sets, mesh_dir):
+                    if not target.exists() and not target.is_symlink():
+                        continue
+                    dead = target.with_name(target.name + ".dead." + str(int(_time.time())))
+                    try:
+                        target.rename(dead)
+                        _sh.rmtree(dead, ignore_errors=True)
+                        break
+                    except OSError:
+                        continue
+                else:
+                    if sets.exists():
+                        raise OSError(
+                            f"polyMesh/sets ghost blocks write ({sets}); bury sets/polyMesh "
+                            f"manually then Mesh again."
+                        )
     mesh_dir.mkdir(parents=True, exist_ok=True)
     n_internal = len(neighs)
     # Translational cyclic period = exactly 1×pitch for the 1-pitch strip (Freeze B).
