@@ -225,10 +225,82 @@ def _native_solver_ok(args: list[str]) -> bool:
     return _esi_native()
 
 
+def reclaim_case_ownership(case_dir: Path) -> list[str]:
+    """Make case tree writable by the current uid.
+
+    Docker checkMesh (as root) can leave ``constant/polyMesh/sets`` root-owned;
+    the next Mesh write then dies with PermissionError. Prefer deleting the
+    disposable ``sets`` tree; otherwise chown via a one-shot root container.
+    Returns paths that were repaired (empty if nothing to do).
+    """
+    case_dir = Path(case_dir).resolve()
+    repaired: list[str] = []
+    uid, gid = os.getuid(), os.getgid()
+    # Disposable OF set files — safe to wipe before every mesh rewrite.
+    sets = case_dir / "constant" / "polyMesh" / "sets"
+    if sets.exists():
+        try:
+            shutil.rmtree(sets)
+            repaired.append(str(sets))
+        except PermissionError:
+            docker = _docker_bin()
+            if docker and _docker_image_present():
+                vol = _docker_volume_spec(case_dir)
+                inner = [
+                    "docker", "run", "--rm", "--user", "0:0",
+                    "-v", vol, "-w", str(case_dir),
+                    "--entrypoint", "bash", DOCKER_IMAGE, "-lc",
+                    f"chown -R {uid}:{gid} { _shell_quote(str(case_dir)) } && "
+                    f"rm -rf { _shell_quote(str(sets)) }",
+                ]
+                cmd = _flatten_docker_cmd(inner)
+                subprocess.run(cmd, check=False, capture_output=True, env=_docker_host_env())
+                if sets.exists():
+                    try:
+                        shutil.rmtree(sets)
+                    except Exception:
+                        pass
+                repaired.append(str(sets) + " (chown+rm)")
+            else:
+                raise
+    # Any other root-owned leaves under polyMesh — chown tree once.
+    poly = case_dir / "constant" / "polyMesh"
+    if poly.is_dir():
+        bad = []
+        for root, dirs, files in os.walk(poly):
+            for name in dirs + files:
+                fp = Path(root) / name
+                try:
+                    st = fp.stat()
+                except OSError:
+                    continue
+                if st.st_uid != uid:
+                    bad.append(fp)
+        if bad:
+            docker = _docker_bin()
+            if docker and _docker_image_present():
+                vol = _docker_volume_spec(case_dir)
+                inner = [
+                    "docker", "run", "--rm", "--user", "0:0",
+                    "-v", vol, "-w", str(case_dir),
+                    "--entrypoint", "bash", DOCKER_IMAGE, "-lc",
+                    f"chown -R {uid}:{gid} { _shell_quote(str(poly)) }",
+                ]
+                cmd = _flatten_docker_cmd(inner)
+                subprocess.run(cmd, check=False, capture_output=True, env=_docker_host_env())
+                repaired.append(str(poly) + " (chown)")
+    return repaired
+
+
+
 def run_foam(args: list[str], cwd: Path, log_name: str, env: dict[str, str] | None = None) -> int:
     cwd = Path(cwd).resolve()
     log = cwd / log_name
     cwd.mkdir(parents=True, exist_ok=True)
+    try:
+        reclaim_case_ownership(cwd)
+    except Exception:
+        pass
     if _native_solver_ok(args):
         env = env or foam_env()
         # Always source ESI bashrc so Foundation OF12 never wins PATH.

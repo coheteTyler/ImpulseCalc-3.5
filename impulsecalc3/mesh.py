@@ -3960,6 +3960,21 @@ def write_polymesh(
         counts[name] = len(buckets[name])
 
     mesh_dir = case_dir / "constant" / "polyMesh"
+    try:
+        from .ofenv import reclaim_case_ownership
+        reclaim_case_ownership(case_dir)
+    except Exception:
+        # Best-effort: wipe sets even if ofenv import fails mid-test.
+        sets = mesh_dir / "sets"
+        if sets.exists():
+            import shutil as _sh
+            try:
+                _sh.rmtree(sets)
+            except PermissionError as e:
+                raise PermissionError(
+                    f"polyMesh/sets not writable ({sets}); docker checkMesh left root-owned files. "
+                    f"Run reclaim or chown, then Mesh again. Underlying: {e}"
+                ) from e
     mesh_dir.mkdir(parents=True, exist_ok=True)
     n_internal = len(neighs)
     # Translational cyclic period = exactly 1×pitch for the 1-pitch strip (Freeze B).

@@ -351,6 +351,11 @@ def write_polymesh(
     """Write constant/polyMesh. 2-D quad path or pre-extruded lists."""
     out = Path(out_dir)
     mesh = out / "constant" / "polyMesh"
+    try:
+        from .ofenv import reclaim_case_ownership
+        reclaim_case_ownership(out)
+    except Exception:
+        pass
 
     if points_xyz is None:
         xy, inv = weld_xy(points_xy)
