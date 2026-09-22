@@ -41,10 +41,14 @@ _MERGED_CACHE: str | None | bool = False
 
 
 def _self_merged_dir() -> str | None:
-    """Host path of this container's overlay merged root (for -v binds via host Docker).
+    """Host path of this container's overlay root (for -v binds via host Docker).
 
     Plain -v /workspace:/workspace from inside the sand-box mounts an empty host
-    dir. Binding MergedDir+/workspace shares the live box filesystem.
+    dir. Binding host_overlay_root+/workspace shares the live box filesystem.
+
+    On classic docker overlay2 the bind root is GraphDriver MergedDir
+    (.../overlay2/<id>/merged). On isod the proven bind root is upperdir itself
+    (.../isod/.../diff) — host Docker mounts that as the case source.
     """
     global _MERGED_CACHE
     if _MERGED_CACHE is not False:
@@ -54,14 +58,17 @@ def _self_merged_dir() -> str | None:
         mi = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
     except OSError:
         mi = ""
-    # upperdir=.../overlay2/<id>/diff  →  .../overlay2/<id>/merged
     import re
 
-    m = re.search(r"upperdir=([^,\s]+)/diff", mi)
+    # upperdir=<path> — isod uses /var/lib/isod/.../diff as the bind root;
+    # classic overlay2 uses sibling .../merged under /var/lib/docker/overlay2/.
+    m = re.search(r"upperdir=([^,\s]+)", mi)
     if m:
-        cand = m.group(1) + "/merged"
-        # Host docker sees this path; we may not be able to listdir it.
-        merged = cand if cand.startswith("/var/lib/docker/overlay2/") else None
+        upper = m.group(1)
+        if "/var/lib/isod/" in upper:
+            merged = upper
+        elif upper.endswith("/diff") and upper.startswith("/var/lib/docker/overlay2/"):
+            merged = upper[: -len("/diff")] + "/merged"
     if merged is None:
         docker = _docker_bin()
         if docker:
@@ -145,13 +152,17 @@ def _docker_image_present() -> bool:
 
 
 def _docker_prefix() -> list[str]:
+    """Argv prefix for docker CLI.
+
+    When the unix sock is missing or not RW-accessible we talk to the host
+    daemon via DOCKER_HOST=tcp://... . Never wrap with sudo/sg in that case:
+    ``sudo -n`` strips DOCKER_HOST and the client falls back to
+    unix:///var/run/docker.sock → rc=125.
+    """
     sock = Path("/var/run/docker.sock")
-    if sock.exists() and os.access(str(sock), os.R_OK | os.W_OK):
+    if not sock.exists() or not os.access(str(sock), os.R_OK | os.W_OK):
         return []
-    if shutil.which("sg") and _user_in_docker_group():
-        return ["sg", "docker", "-c"]
-    if shutil.which("sudo"):
-        return ["sudo", "-n"]
+    # Sock is RW — no privilege escalation needed.
     return []
 
 
@@ -351,4 +362,18 @@ def run_foam(args: list[str], cwd: Path, log_name: str, env: dict[str, str] | No
             check=False,
             env=_docker_host_env(),
         )
-    return int(proc.returncode)
+    rc = int(proc.returncode)
+    if rc != 0:
+        try:
+            log_txt = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log_txt = ""
+        if "Cannot connect to the Docker daemon" in log_txt:
+            hint = (
+                "HINT: Docker daemon unreachable via unix sock; ensure "
+                "DOCKER_HOST=tcp://127.0.0.1:2375 is set and do not wrap "
+                "docker with sudo (sudo strips DOCKER_HOST).\n"
+            )
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(hint)
+    return rc

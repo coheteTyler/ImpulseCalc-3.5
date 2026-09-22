@@ -377,7 +377,12 @@ def run_job(
                 }
                 flags["solve_ok"] = int(rc_s) == 0 and not solve["fatal"]
                 if not flags["solve_ok"]:
-                    errors.append(f"rhoCentralFoam rc={rc_s}")
+                    if "Cannot connect to the Docker daemon" in log_s:
+                        errors.append(
+                            f"docker daemon unreachable (rc={rc_s})"
+                        )
+                    else:
+                        errors.append(f"rhoCentralFoam rc={rc_s}")
             # foamToVTK if present
             vtk_dir = case_dir / "VTK"
             if shutil.which("foamToVTK", path=env.get("PATH", "")):
