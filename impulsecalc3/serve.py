@@ -1167,11 +1167,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {
-                    "family": "pritchard_11",
+                    "family": "impulse_bucket",
                     "hu_mm": 5.0,
                     "hl_mm": 2.2,
                     "le_mm": 0.4,
-                    "te_mm": 0.0,
+                    "te_mm": 0.4,
                     "lin_mm": 4.25,
                     "lout_mm": 4.25,
                     "t_mm": 1.4,
