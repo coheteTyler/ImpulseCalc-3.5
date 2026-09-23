@@ -217,7 +217,8 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
     TE fillet path: values.te_mm → knobs.te_mm → geometry.te_fillet_r_m
     (preview.knobs_to_job). values.r_te_ratio → te_fillet_r_c when te_mm absent.
     Absolute te_mm wins when set and >0; te_mm=0 is treated as unset for Pritchard
-    (map r_te_ratio·chord) so a zero cannot kill TE. Default family: pritchard_11.
+    (map r_te_ratio·chord) so a zero cannot kill TE. Family from profile.values
+    (default impulse_bucket). Pritchard zeros Lin/Lout only.
     """
     v = profile.get("values") or profile
     knobs: dict[str, Any] = {}
@@ -311,11 +312,22 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
         knobs["mean_radius_m"] = float(v["dm_mm"]) * 5e-4  # dm/2
         knobs["dm_mm"] = float(v["dm_mm"])
 
-    # FIELD-path family. Stems off (Goldman L_in/L_out are not Pritchard radii).
-    knobs["family"] = "pritchard_11"
-    knobs["profile_family"] = "pritchard_11"
-    knobs["lin_mm"] = 0.0
-    knobs["lout_mm"] = 0.0
+    # Honor profile family. Do not force Pritchard — that remaps bucket metal on every Inputs Update.
+    raw_fam = str(v.get("family") or v.get("profile_family") or "impulse_bucket").strip().lower()
+    if raw_fam in ("pritchard_11", "pritchard11", "pritchard", "eleven_parameter", "11param"):
+        fam = "pritchard_11"
+    elif raw_fam in ("impulse_bucket", "dual_arc", "pelton", "bucket", "cup", "goldman", "goldman_vortex", "vortex_impulse"):
+        fam = "impulse_bucket"
+    elif raw_fam in ("foil", "airfoil", "naca", "circular_arc"):
+        fam = "foil"
+    else:
+        fam = "impulse_bucket"
+    knobs["family"] = fam
+    knobs["profile_family"] = fam
+    if fam == "pritchard_11":
+        # Goldman stems are not Pritchard radii.
+        knobs["lin_mm"] = 0.0
+        knobs["lout_mm"] = 0.0
     return knobs
 
 
@@ -446,7 +458,6 @@ def apply_constant_passage_to_profile(profile: dict) -> tuple[dict, dict]:
         return profile, {"ok": True, "enabled": False}
 
     knobs = profile_to_ic3_knobs(profile)
-    knobs["family"] = "pritchard_11"
     knobs["constant_passage_width"] = False
     if v.get("passage_depth_mm") not in (None, ""):
         knobs["passage_depth_mm"] = float(v["passage_depth_mm"])
@@ -475,7 +486,6 @@ def auto_passage_depth_for_profile(profile: dict) -> tuple[dict, dict]:
         return profile, {"ok": False, "reason": "no profile"}
     v = profile.setdefault("values", {})
     knobs = profile_to_ic3_knobs(profile)
-    knobs["family"] = "pritchard_11"
     knobs["constant_passage_width"] = False
     job = knobs_to_job(knobs)
     meas = measure_fillet_foot_clearance(job)

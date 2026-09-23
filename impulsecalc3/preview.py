@@ -58,7 +58,7 @@ def _family_key(raw: Any) -> str:
         return "pritchard_11"
     if s in ("impulse_bucket", "dual_arc", "pelton", "bucket", "cup"):
         return "cup"
-    return "pritchard_11"
+    return "cup"
 
 
 def template_path_for(family: str) -> Path:
@@ -115,7 +115,7 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
     if isinstance(k.get("geometry"), dict):
         k = {**k, **k["geometry"]}
     # One solver: pointed-tip impulse bucket (default) or circular-arc foil. Not MOC.
-    fam = _family_key(k.get("family") or k.get("profile_family") or "pritchard_11")
+    fam = _family_key(k.get("family") or k.get("profile_family") or "impulse_bucket")
     base = copy.deepcopy(template or _template(fam))
     base["format"] = FORMAT
     base["name"] = APP_NAME

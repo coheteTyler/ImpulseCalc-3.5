@@ -1251,7 +1251,6 @@ class Handler(BaseHTTPRequestHandler):
                 PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
                 PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
                 mapped = profile_to_ic3_knobs(base)
-                mapped["family"] = "pritchard_11"
                 self._json(
                     200,
                     {
@@ -1324,7 +1323,6 @@ class Handler(BaseHTTPRequestHandler):
             PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
             PROFILE_PATH.write_text(json.dumps(base, indent=2), encoding="utf-8")
             mapped = profile_to_ic3_knobs(base)
-            mapped["family"] = "pritchard_11"
             self._json(
                 200,
                 {
