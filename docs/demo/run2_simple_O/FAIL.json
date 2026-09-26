@@ -1,0 +1,113 @@
+{
+  "status": "FAIL",
+  "run": "run2 (live tuned cfd knobs)",
+  "stop_rule": "one mesh write, one checkMesh; failed -> no remesh, no knob changes, no mesher edits",
+  "command": ".venv/bin/python examples/demo_points_to_mesh.py --upper examples/demo_upper.csv --lower examples/demo_lower.csv --scale 1e-3 --n-blades 25 --mean-radius 0.0375 --out output/demo_points",
+  "script_exit_code": 1,
+  "mesh_write": "OK (no write error)",
+  "checkMesh_command": "checkMesh -meshQuality (after renumberMesh -overwrite; ESI v2412 via Docker opencfd/openfoam-run:2412)",
+  "checkMesh_verdict_verbatim": "Failed 1 mesh checks.",
+  "failed_checks": [
+    {
+      "check": "meshQuality faces in error: non-orthogonality > 70 degrees",
+      "count": 10
+    }
+  ],
+  "faces_in_error_verbatim": [
+    "non-orthogonality > 70  degrees                        : 10",
+    "faces with concavity > 80  degrees                     : 0",
+    "faces with skewness > 50  (internal) or 50  (boundary) : 0"
+  ],
+  "numbers": {
+    "nonortho_max": 83.132689,
+    "nonortho_avg": 8.0202354,
+    "faces_gt_70": 10,
+    "skew_max": 2.1712533,
+    "max_aspect_ratio": 160.51687,
+    "min_volume_m3": 6.8458363e-13,
+    "standard_nonortho_check": "Non-orthogonality check OK",
+    "cell_volumes": "OK",
+    "face_pyramids": "OK"
+  },
+  "bad_face_centres_mm_approx": [
+    [
+      1.499,
+      -1.691
+    ],
+    [
+      3.24,
+      -1.085
+    ],
+    [
+      -0.423,
+      -2.414
+    ],
+    [
+      1.78,
+      -1.727
+    ],
+    [
+      -0.142,
+      -2.45
+    ],
+    [
+      6.761,
+      -1.084
+    ],
+    [
+      8.509,
+      -1.682
+    ],
+    [
+      8.221,
+      -1.727
+    ],
+    [
+      10.434,
+      -2.401
+    ],
+    [
+      10.146,
+      -2.446
+    ]
+  ],
+  "bad_face_location_note": "from polyMesh with approximate cell centres (post-hoc numpy, count matches checkMesh=10); all sit near the LE/TE tips and along the concave lower (inner) surface O-grid",
+  "n_cells": 6428,
+  "live_knobs_preview_cells": 15148,
+  "first_cell_m": 4.84252469217399e-06,
+  "patches": {
+    "inlet": [
+      "patch",
+      94
+    ],
+    "outlet": [
+      "patch",
+      94
+    ],
+    "bottom": [
+      "cyclic translational, neighbour top, separation (0 0.009424778 0)",
+      58
+    ],
+    "top": [
+      "cyclic translational, neighbour bottom",
+      58
+    ],
+    "frontAndBack": [
+      "empty",
+      12856
+    ],
+    "blade0": [
+      "wall",
+      60
+    ]
+  },
+  "cfd_knob_diff_vs_live": {
+    "smoke_end_s": [
+      1.0526315789473684e-05,
+      "<absent>"
+    ]
+  },
+  "likely_cause_not_fixed": "Knobs match live, but mesh branch differs. The live case is profile_family impulse_bucket, which takes the body_fitted_OH shock branch (build_body_fitted_oh_shock, y+ inflation, n_pitchwise_throat). profile_family profile_points (this demo) takes the padded-AABB O-grid branch in mesh.py (use_cavity requires family in impulse_bucket/goldman). Same 10 faces and identical max skewness 2.1712533 as run1 indicate the O-ring (60 around, 60 wall faces) is unchanged by the cfd fix.",
+  "run1": "docs/demo/run1_stale_knobs/ (stale geom_points cfd block; 1728 cells; also Failed 1 mesh checks, 10 faces > 70)",
+  "predicted": true
+}

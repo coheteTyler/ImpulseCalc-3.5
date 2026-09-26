@@ -2028,17 +2028,12 @@ def build_offset_oh(
     # Conformal east edge = north H west edge (packed spacing). Linear nw_east was
     # the leftover source when r_north>1.
     nw_east = north_w.copy()
-    nw_west = _lin(west_n[0], nw_north[0], north_w.shape[0] - 1)
+    # West (inlet) edge carries the SAME packed y-nodes as the east edge (north H
+    # west edge, first Δy≈dn_o), mirroring h_sw: rows stay level across nw/north.
+    # Plain TFI, no Laplacian: smoothing against the packed east edge dragged the
+    # bottom rows sideways (sheared thin cells, checkMesh non-ortho 76–79° > 70).
+    nw_west = np.column_stack([np.full(north_w.shape[0], float(west_n[0, 0])), north_w[:, 1]])
     h_nw_raw = tfi_block(west_n, nw_north, nw_west, nw_east)
-    _n0 = h_nw_raw[:, 0, :].copy(); _n1 = h_nw_raw[:, -1, :].copy()
-    _nw = h_nw_raw[0, :, :].copy(); _ne = h_nw_raw[-1, :, :].copy()
-    sm = smooth_rect_block(h_nw_raw, n_iter=80, omega=0.45)
-    if min_cell_area_2d_rect(sm) > 0:
-        h_nw_raw = sm
-        h_nw_raw[:, 0, :] = _n0; h_nw_raw[:, -1, :] = _n1
-        h_nw_raw[0, :, :] = _nw; h_nw_raw[-1, :, :] = _ne
-        h_nw_raw[0, 0, :] = _n0[0]; h_nw_raw[-1, 0, :] = _n0[-1]
-        h_nw_raw[0, -1, :] = _n1[0]; h_nw_raw[-1, -1, :] = _n1[-1]
     h_nw = _pos_block(h_nw_raw, "nw", keep_edges=True)
 
     # Dump west = south H east + O east stem + north H east (collar silhouette).
@@ -3394,8 +3389,10 @@ def write_polymesh(
     if passage is None and cas is None:
         d_o = min(0.00045, 0.22 * max(clearance_y, 2e-6), 0.06 * spec.chord_m)
     fam = str((job.get("geometry") or {}).get("profile_family") or "")
+    # profile_points (user point loop) joins the high-def Goldman O–H path when the
+    # metal is a down-opening cup (profile_has_cavity gate unchanged).
     use_cavity = profile_has_cavity(poly0) and fam in (
-        "impulse_bucket", "goldman_impulse", "goldman", "goldman_vortex",
+        "impulse_bucket", "goldman_impulse", "goldman", "goldman_vortex", "profile_points",
     )
     do_cap_note = ""
     if passage is None and cas is None:

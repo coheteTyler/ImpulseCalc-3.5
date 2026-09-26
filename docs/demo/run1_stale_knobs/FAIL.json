@@ -1,0 +1,62 @@
+{
+  "status": "FAIL",
+  "stop_rule": "one mesh write, one checkMesh; failed -> no remesh, no knob changes, no mesher edits",
+  "command": ".venv/bin/python examples/demo_points_to_mesh.py --upper examples/demo_upper.csv --lower examples/demo_lower.csv --scale 1e-3 --n-blades 25 --mean-radius 0.0375 --out output/demo_points",
+  "script_exit_code": 1,
+  "mesh_write": "OK (no write error)",
+  "checkMesh_command": "checkMesh -meshQuality (run path: renumberMesh -overwrite, then checkMesh -meshQuality; OpenFOAM ESI v2412 via Docker opencfd/openfoam-run:2412)",
+  "checkMesh_verdict_verbatim": "Failed 1 mesh checks.",
+  "failed_checks": [
+    {
+      "check": "meshQuality faces in error: non-orthogonality > 70 degrees",
+      "count": 10
+    }
+  ],
+  "faces_in_error_verbatim": [
+    "non-orthogonality > 70  degrees                        : 10",
+    "faces with concavity > 80  degrees                     : 0",
+    "faces with skewness > 50  (internal) or 50  (boundary) : 0"
+  ],
+  "standard_geometry_checks_in_same_log": {
+    "Non-orthogonality check": "OK (Max 82.690135, average 13.283428; 10 faces > 70 deg)",
+    "Max skewness": "2.1712533 OK",
+    "Face pyramids": "OK",
+    "Cell volumes": "OK (min 1.1474134e-12, max 2.1395461e-09 m3)",
+    "Max aspect ratio": "41.095236 OK",
+    "Coupled point location match": "average 3.924e-11 OK",
+    "topology": "all OK, 1 region"
+  },
+  "separate_standard_checkMesh_run": "not run (stop rule: one checkMesh)",
+  "n_cells": 1728,
+  "cell_types": "1728 hexahedra",
+  "first_cell_m": 8.118670763665898e-06,
+  "patches": {
+    "inlet": [
+      "patch",
+      28
+    ],
+    "outlet": [
+      "patch",
+      28
+    ],
+    "bottom": [
+      "cyclic (translational, neighbour top, separation 0 0.009424778 0)",
+      44
+    ],
+    "top": [
+      "cyclic (translational, neighbour bottom)",
+      44
+    ],
+    "frontAndBack": [
+      "empty",
+      3456
+    ],
+    "blade0": [
+      "wall",
+      60
+    ]
+  },
+  "run_job_note": "checkMesh failed 1 quality checks; Cell volumes OK \u2014 foam allowed (Track A)",
+  "case_dir": "output/demo_points/openfoam_cases/demo_points",
+  "predicted": true
+}
