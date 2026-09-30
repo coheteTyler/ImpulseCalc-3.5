@@ -578,6 +578,9 @@ footer.status .ok { color: var(--ok); }
     paintReadout();
   }
 
+  // Default article family (Tyler rotor exact points). Profile/knobs family wins when set.
+  const DEFAULT_FAMILY = "profile_points";
+
   async function persistProfile() {
     readValuesFromDom();
     const r = await fetch("/api/profile/update", {
@@ -588,7 +591,7 @@ footer.status .ok { color: var(--ok); }
     const j = await r.json();
     if (!r.ok || j.ok === false) throw new Error(j.error || ("profile HTTP " + r.status));
     if (j.profile && j.profile.values) VALUES = { ...VALUES, ...j.profile.values };
-    lastKnobs = Object.assign({ family: "impulse_bucket" }, j.knobs || {});
+    lastKnobs = Object.assign({ family: DEFAULT_FAMILY }, j.knobs || {});
     applyAuth(j);
     if (j.constant_passage) lastCpw = j.constant_passage;
     if (j.profile && j.profile.values && j.profile.values.hl_mm != null) {
@@ -603,10 +606,10 @@ footer.status .ok { color: var(--ok); }
 
   async function buildKnobs() {
     const uj = await persistProfile();
-    let knobs = Object.assign({ family: "impulse_bucket" }, uj.knobs || {});
+    let knobs = Object.assign({ family: DEFAULT_FAMILY }, uj.knobs || {});
     try {
       const d = await (await fetch("/defaults")).json();
-      knobs = Object.assign({}, d, knobs, { family: "impulse_bucket" });
+      knobs = Object.assign({}, d, knobs, { family: knobs.family || d.family || DEFAULT_FAMILY });
       delete knobs.disclaimer;
       delete knobs.of_present;
       delete knobs.authority;
@@ -650,9 +653,9 @@ footer.status .ok { color: var(--ok); }
       if (!body || typeof body !== "object") {
         // Pull knobs from profile/update without reading rail fields.
         const uj = await persistProfile();
-        body = Object.assign({ family: "impulse_bucket" }, uj.knobs || {});
+        body = Object.assign({ family: DEFAULT_FAMILY }, uj.knobs || {});
       } else {
-        body = Object.assign({ family: "impulse_bucket" }, body);
+        body = Object.assign({ family: DEFAULT_FAMILY }, body);
       }
       lastKnobs = body;
       const r = await fetch("/outline", {

@@ -3279,6 +3279,18 @@ def write_polymesh(
             "Refuse mesh/solve."
         )
     d_o_gate = min(0.00045, 0.06 * spec.chord_m)
+    # Curved-periodic O/H path (exact points, camber-following cyclic midline).
+    # Only for family profile_points when the blade is taller than the pitch (or the
+    # straight-strip Gate 0 clip would trigger), or when explicitly requested.
+    # The bucket / generic paths below are untouched.
+    _curved_ask = mesh_req in ("curved_periodic", "curved_periodic_OH")
+    _curved_auto = (
+        fam0 == "profile_points"
+        and (use_body or _curved_ask)
+        and (yspan >= float(pitch) or yspan + 2.0 * d_o_gate >= float(pitch))
+    )
+    if _curved_ask or _curved_auto:
+        return _write_curved_periodic(case_dir, job, spec, poly0, pitch, x_in, x_out, zth, gap0)
     # Freeze B: never remesh a live 3-blade cassette. Redirect cassette/HOH-fallback → body_fitted.
     _mesh_ask = str(cfd.get("mesh") or "").strip()
     if _mesh_ask in ("cassette_OH", "cassette") or bool(job.get("_hoh_fallback")):
@@ -4305,3 +4317,66 @@ def write_mesh_preview_png(
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, facecolor="#0b0b0f", edgecolor="none")
     plt.close(fig)
+
+
+def _write_curved_periodic(case_dir, job, spec, poly0, pitch, x_in, x_out, zth, gap0) -> "MeshBuild":
+    """Camber-following curved-periodic O/H mesh (impulsecalc3.curved_periodic)."""
+    from .curved_periodic import CurvedParams, build_curved_periodic, write_polymesh_2d
+    from .oh_shock import y1_wall_m
+
+    cfd = job["cfd"]
+    gas = job.get("gas") or {}
+    y1, u_tau, y1_note = y1_wall_m(
+        mu_pa_s=float(gas.get("mu_pa_s") or 1e-5),
+        rho1_kg_m3=float(gas.get("rho1_kg_m3") or gas.get("rho1") or 1.0),
+        w1_m_s=float(gas.get("w1_m_s") or 1.0),
+        yplus_target=float(cfd.get("yplus_target") or 1.0),
+        u_tau_frac_w1=float(cfd.get("u_tau_frac_w1") or 0.05),
+    )
+    growth = min(max(float(cfd.get("stretch") or 1.12), 1.05), 1.25)
+    n_wall = max(15, min(25, int(cfd.get("n_radial") or 20)))
+    cp_over = dict(cfd.get("curved") or {})
+    params = CurvedParams(**{k: v for k, v in cp_over.items() if k in CurvedParams.__dataclass_fields__})
+    res = build_curved_periodic(
+        [(float(x), float(y)) for x, y in poly0],
+        pitch=float(pitch), chord=float(spec.chord_m), x_in=float(x_in), x_out=float(x_out),
+        y1=float(y1), growth=growth, n_wall=n_wall, params=params,
+    )
+    max_cells = int(cfd.get("curved_max_cells") or 70000)
+    if int(res.metrics["n_cells"]) > max_cells:
+        raise RuntimeError(f"curved_periodic: n_cells={res.metrics['n_cells']} > cap {max_cells}")
+    info = write_polymesh_2d(
+        Path(case_dir), res.xy, res.quads, res.patches, float(zth),
+        cyclic_pairs=("bottom", "top"), separation=float(pitch),
+    )
+    m = res.metrics
+    notes = list(res.notes)
+    notes.append(y1_note)
+    notes.append(f"passage_gap g_min (arc-length metric) = {float(gap0['g_min'])*1e3:.3f} mm")
+    job["_viz_stack_blades"] = max(int((job.get("geometry") or {}).get("n_blades_cascade") or 3), 1)
+    job["_curved_periodic"] = {"T": [[float(a), float(b)] for a, b in res.T[:: max(1, len(res.T) // 400)]], **{
+        k: v for k, v in m.items() if not isinstance(v, dict)}}
+    yf = float(m["y_flat_m"])
+    return MeshBuild(
+        n_cells=int(info["n_cells"]),
+        n_points=int(info["n_points"]),
+        n_faces=int(info["n_faces"]),
+        patches={k: int(v) for k, v in info["patches"].items()},
+        first_cell_m=float(m["first_cell_m"]),
+        min_area_2d=float(np.min(0.5 * np.abs(
+            (res.xy[res.quads[:, 2], 0] - res.xy[res.quads[:, 0], 0]) * (res.xy[res.quads[:, 3], 1] - res.xy[res.quads[:, 1], 1])
+            - (res.xy[res.quads[:, 3], 0] - res.xy[res.quads[:, 1], 0]) * (res.xy[res.quads[:, 2], 1] - res.xy[res.quads[:, 0], 1])))),
+        check_notes=notes,
+        pitch_m=float(pitch),
+        z_thick_m=float(zth),
+        blade_polys=[[(float(x), float(y)) for x, y in poly0]],
+        x_in=float(x_in),
+        x_out=float(x_out),
+        y_min=yf - float(pitch),
+        y_max=yf,
+        n_around=int(len(res.patches["blade0"])),
+        n_radial=int(m["O_layers"]),
+        d_o_m=float(m["O_thickness_m"]),
+        mesh_kind="curved_periodic_OH",
+        n_quad=int(info["n_cells"]),
+    )

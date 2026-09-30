@@ -35,6 +35,8 @@ TEMPLATE_PRITCHARD = ROOT / "configs" / "geom_pritchard_11.json"
 TEMPLATE_PRITCHARD_LEGACY = ROOT / "configs" / "geom_pritchard11.json"
 TEMPLATE_FOIL = ROOT / "configs" / "geom_foil.json"
 TEMPLATE_POINTS = ROOT / "configs" / "geom_points.json"
+# Tyler rotor (exact points, tuned cfd block from the live knobs_preview job).
+TEMPLATE_POINTS_ROTOR = ROOT / "configs" / "geom_profile_points_rotor.json"
 APP_OUTPUT = "output/geom_tests/knobs_preview"
 APP_NAME = "knobs_preview"
 
@@ -66,7 +68,7 @@ def template_path_for(family: str) -> Path:
     if fam == "foil":
         return TEMPLATE_FOIL if TEMPLATE_FOIL.is_file() else (ROOT / "configs" / "marlin_v2_rotor.json")
     if fam == "points":
-        return TEMPLATE_POINTS
+        return TEMPLATE_POINTS_ROTOR if TEMPLATE_POINTS_ROTOR.is_file() else TEMPLATE_POINTS
     if fam == "pritchard_11":
         return (
             TEMPLATE_PRITCHARD if TEMPLATE_PRITCHARD.is_file()
@@ -115,7 +117,7 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
     if isinstance(k.get("geometry"), dict):
         k = {**k, **k["geometry"]}
     # One solver: pointed-tip impulse bucket (default) or circular-arc foil. Not MOC.
-    fam = _family_key(k.get("family") or k.get("profile_family") or "impulse_bucket")
+    fam = _family_key(k.get("family") or k.get("profile_family") or "profile_points")
     base = copy.deepcopy(template or _template(fam))
     base["format"] = FORMAT
     base["name"] = APP_NAME
@@ -274,9 +276,19 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         g["profile_family"] = "pritchard_11"
     elif fam == "cup":
         g["profile_family"] = "impulse_bucket"
+    elif fam == "points":
+        g["profile_family"] = "profile_points"
     else:
         g["profile_family"] = "pritchard_11"
-    g.pop("profile_points", None)
+    if fam == "points":
+        # Exact metal: keep the template/knob point loop; bucket sagittas do not apply.
+        if not g.get("profile_points"):
+            raise ValueError("family profile_points needs geometry.profile_points (template or knobs)")
+        g["n_profile_points"] = len(g["profile_points"]) - 1
+        for key in ("upper_sagitta_m", "lower_sagitta_m", "hu_mm", "hl_mm"):
+            g.pop(key, None)
+    else:
+        g.pop("profile_points", None)
     if fam == "pritchard_11" or g.get("profile_family") == "pritchard_11":
         # Pure Pritchard: no Goldman L_in/L_out stems (straights // flow ≠ radii).
         g["lin_m"] = 0.0
@@ -487,6 +499,9 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
     # Knobs preview CFD path: 3-blade closed-O HOH. Hybrid is donor fallback only.
     if k.get("mesh") not in (None, ""):
         cfd["mesh"] = str(k["mesh"])
+    elif fam == "points":
+        # body_fitted_OH request → mesh.write_polymesh routes tall profile_points to curved_periodic_OH.
+        cfd["mesh"] = "body_fitted_OH"
     else:
         cfd["mesh"] = "hoh"
     if str(cfd.get("mesh") or "").lower() == "hoh":

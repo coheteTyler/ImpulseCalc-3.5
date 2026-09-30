@@ -159,10 +159,11 @@ def _effective_knobs(post_knobs: dict[str, Any] | None = None) -> dict[str, Any]
         return knobs
     if isinstance(post_knobs, dict) and post_knobs:
         out = dict(post_knobs)
-        out.setdefault("family", "pritchard_11")
+        out.setdefault("family", "profile_points")
         return out
     knobs = profile_to_ic3_knobs(_load_profile_disk())
-    knobs["family"] = "pritchard_11"
+    if knobs.get("family") != "profile_points":
+        knobs["family"] = "pritchard_11"
     return knobs
 
 
@@ -818,7 +819,8 @@ def _run_mesh(knobs: dict[str, Any]) -> dict[str, Any]:
     mk_req = str(cfd.get("mesh") or "").strip().lower()
     if mk_req in ("hybrid", "hybrid_oh_tri"):
         cfd["mesh"] = "hybrid_OH_tri"
-    elif mk_req in ("body_fitted_oh", "body_fitted", "oh_shock"):
+    elif mk_req in ("body_fitted_oh", "body_fitted", "oh_shock") or g.get("profile_family") == "profile_points":
+        # profile_points: body_fitted_OH request; tall blades route to curved_periodic_OH in mesh.py.
         cfd["mesh"] = "body_fitted_OH"
     else:
         cfd["mesh"] = "hoh"
@@ -1164,25 +1166,24 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/defaults":
+            # Default article: Tyler rotor, exact points (profile_points → curved_periodic_OH mesh).
+            # Z=37 is an ASSUMPTION (RTS default); r_m = Z*s/(2*pi).
             self._json(
                 200,
                 {
-                    "family": "impulse_bucket",
-                    "hu_mm": 5.0,
-                    "hl_mm": 2.2,
-                    "le_mm": 0.4,
-                    "te_mm": 0.4,
-                    "lin_mm": 4.25,
-                    "lout_mm": 4.25,
-                    "t_mm": 1.4,
-                    "r_tr_mm": 3.5,
-                    "r_main_mm": 4.8,
-                    "psi_tr_deg": 0.0,
-                    "beta1": 72.0,
-                    "beta2": -72.0,
-                    "s_mm": 8.1,
-                    "sigma": 1.234,
-                    "packing": {"s_mm": 8.1, "sigma": 1.234, "c": 0.01, "r": 0.0375},
+                    "family": "profile_points",
+                    "profile_family": "profile_points",
+                    "points_source": "configs/geom_profile_points_rotor.json (Tyler rotor JSON, exact loop)",
+                    "chord_mm": 10.0,
+                    "beta1": 64.0,
+                    "beta2": -64.0,
+                    "s_mm": 6.32246,
+                    "Z": 37,
+                    "Z_assumed": True,
+                    "dm_mm": 74.4626,
+                    "sigma": 1.5817,
+                    "packing": {"s_mm": 6.32246, "sigma": 1.5817, "c": 0.01, "r": 0.0372313},
+                    "mesh": "body_fitted_OH",
                     "of_present": openfoam_available(),
                     "authority": AUTHORITY_SCOPING,
                     "disclaimer": "Engineering aid, not a flight certificate. PREDICTED is not a design load.",

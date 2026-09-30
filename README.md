@@ -226,3 +226,7 @@ Algorithm, in order: (1) requirements less dumb (2) delete the part (3) optimize
 Change `s` and read Gate 0. If you change the writer, keep Python hex → ESI 2412. If you bring back a channel writer, it must walk SS/PS polylines by arc length, abort on cell-in-C, and hard-fail checkMesh. If you paint a contour after `nfail > 0`, you are repeating 2026-09-02.
 
 Zip date: 2026-09-03. Tree: ImpulseCalc3 as it sat after cassette_OH + slider min 3 mm + hard cyclic fail.
+
+**IC3.5 default article (Tyler rotor):** exact points `configs/rotor_default_points/rotor_{upper,lower}.csv` (job template `configs/geom_profile_points_rotor.json`), family `profile_points`.
+Pitch 6.32246 mm, Z=37 (assumed), inlet flow angle 64 deg; Run mesh routes to `impulsecalc3/curved_periodic.py` (curved_periodic_OH, 26912 cells, checkMesh OK).
+Smoke rhoCentralFoam to 1.0526e-5 s clean (Co max 0.155) - PREDICTED, not a design load.

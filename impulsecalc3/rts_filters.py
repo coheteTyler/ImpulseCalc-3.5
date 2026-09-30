@@ -37,7 +37,7 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
             "relative_inlet": {
                 "label": "Relative inlet (post-stator)",
                 "keys": [
-                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Relative inlet from axial", "sym": "β1", "unit": "deg", "default": 65.0, "help": "θ from vertical upright to W1 is 90°−|β1|"},
+                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Relative inlet from axial", "sym": "β1", "unit": "deg", "default": 64.0, "help": "θ from vertical upright to W1 is 90°−|β1|"},
                     {"rts": "(derived)", "id": "W1_m_s", "label": "Relative inlet speed", "sym": "W1", "unit": "m/s", "default": 1200.0},
                     {"rts": "cycle.eta_n", "id": "eta_n", "label": "Nozzle efficiency (SCOPING)", "sym": "ηn", "unit": "—", "default": 0.90},
                 ],
@@ -62,9 +62,9 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
                 "label": "Horizontal (pitch / diameter)",
                 "intent": "horizontal",
                 "keys": [
-                    {"rts": "cycle.d_m", "id": "dm_mm", "label": "Mean diameter", "sym": "dm", "unit": "mm", "default": 75.0},
-                    {"rts": "rotorValues.N", "id": "Z", "label": "Blade count (machine)", "sym": "N", "unit": "—", "default": 25},
-                    {"rts": "(derived σ=c/s)", "id": "solidity", "label": "Solidity (derived c/s)", "sym": "σ", "unit": "—", "default": 1.4, "derived": True, "readonly": True},
+                    {"rts": "cycle.d_m", "id": "dm_mm", "label": "Mean diameter", "sym": "dm", "unit": "mm", "default": 74.4626},
+                    {"rts": "rotorValues.N", "id": "Z", "label": "Blade count (machine)", "sym": "N", "unit": "—", "default": 37},
+                    {"rts": "(derived σ=c/s)", "id": "solidity", "label": "Solidity (derived c/s)", "sym": "σ", "unit": "—", "default": 1.5817, "derived": True, "readonly": True},
                     {"rts": "cycle.degree_of_admission", "id": "epsilon", "label": "Admission", "sym": "ε", "unit": "—", "default": 1.0},
                 ],
             },
@@ -87,8 +87,8 @@ FILTER_GROUPS: dict[str, dict[str, Any]] = {
             "pritchard": {
                 "label": "Pritchard 11-param",
                 "keys": [
-                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Inlet blade angle βi", "sym": "βi", "unit": "deg", "default": 65.0},
-                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Exit blade angle βo (impulse: βo ≈ −βi)", "sym": "βo", "unit": "deg", "default": -65.0, "hint": "impulse: βo ≈ −βi"},
+                    {"rts": "cycle.beta_1", "id": "beta1_deg", "label": "Inlet blade angle βi", "sym": "βi", "unit": "deg", "default": 64.0},
+                    {"rts": "cycle.beta_2", "id": "beta2_deg", "label": "Exit blade angle βo (impulse: βo ≈ −βi)", "sym": "βo", "unit": "deg", "default": -64.0, "hint": "impulse: βo ≈ −βi"},
                     {"rts": "rotorValues.unguided_turning", "id": "unguided_turning_deg", "label": "Unguided turning", "sym": "θu", "unit": "deg", "default": 8.0},
                     {"rts": "cycle.gamma_ri", "id": "epsilon_i_deg", "label": "Inlet half-wedge εi", "sym": "εi", "unit": "deg", "default": 10.0},
                     {"rts": "rotorValues.t_ri", "id": "throat_mm", "label": "Geometric throat", "sym": "o", "unit": "mm", "default": 2.356, "hint": "Default ≈ 0.25·pitch at R=37.5 mm, Z=25"},
@@ -190,6 +190,9 @@ def sanitize_impulse_betas(profile: dict[str, Any]) -> dict[str, Any]:
 def defaults_profile() -> dict[str, Any]:
     """Central profile written by Update. Flat id→value plus metadata."""
     vals = {k["id"]: k["default"] for k in all_keys()}
+    # Default article: Tyler rotor exact points, s = pi*dm/Z = 6.32246 mm (Z=37 assumed).
+    vals.setdefault("family", "profile_points")
+    vals.setdefault("s_mm", 6.32246)
     return {
         "format": "impulsecalc35_profile_v1",
         "authority": "SCOPING",
@@ -313,15 +316,19 @@ def profile_to_ic3_knobs(profile: dict[str, Any]) -> dict[str, Any]:
         knobs["dm_mm"] = float(v["dm_mm"])
 
     # Honor profile family. Do not force Pritchard — that remaps bucket metal on every Inputs Update.
-    raw_fam = str(v.get("family") or v.get("profile_family") or "impulse_bucket").strip().lower()
+    raw_fam = str(v.get("family") or v.get("profile_family") or "profile_points").strip().lower()
     if raw_fam in ("pritchard_11", "pritchard11", "pritchard", "eleven_parameter", "11param"):
         fam = "pritchard_11"
     elif raw_fam in ("impulse_bucket", "dual_arc", "pelton", "bucket", "cup", "goldman", "goldman_vortex", "vortex_impulse"):
         fam = "impulse_bucket"
     elif raw_fam in ("foil", "airfoil", "naca", "circular_arc"):
         fam = "foil"
+    elif raw_fam in ("profile_points", "points"):
+        # Exact point cloud (curved-periodic mesh path); points live in the job template.
+        fam = "profile_points"
     else:
-        fam = "impulse_bucket"
+        # Default article: Tyler rotor exact points (curved_periodic_OH).
+        fam = "profile_points"
     knobs["family"] = fam
     knobs["profile_family"] = fam
     if fam == "pritchard_11":
