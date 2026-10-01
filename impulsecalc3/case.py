@@ -297,7 +297,9 @@ def write_control_dict(
 
     max_dt = float(cfd.get("max_delta_t", min(t_end / 40.0, 2e-6 if fast else 5e-7)))
     dt0 = min(1e-11, max_dt * 0.05)
-    write_fmt = str(cfd.get("write_format", "binary" if fast else "ascii"))
+    # ascii always by default: renumberMesh rewrites polyMesh in this format and the
+    # python viz readers (viewer.ofio / post) parse ascii. Opt in to binary explicitly.
+    write_fmt = str(cfd.get("write_format", "ascii"))
     purge = int(cfd.get("purge_write", 3 if fast else 0))
     force_every = int(cfd.get("forces_execute_interval", 50 if fast else 20))
     gamma = float(job["gas"]["gamma"])

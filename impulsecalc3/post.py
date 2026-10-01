@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,38 @@ def foam_time_dirs(case_dir: Path) -> list[str]:
         if (p / "p").is_file() or (p / "p.gz").is_file():
             out.append(p.name)
     return sorted(out, key=lambda s: float(s))
+
+
+def _foam_file_is_binary(path: Path) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(1200)
+    except OSError:
+        return False
+    return re.search(rb"format\s+binary\s*;", head) is not None
+
+
+def ensure_ascii_case(case_dir: Path) -> dict[str, Any]:
+    """Convert a binary-written case (mesh + all time dirs) to ascii before python parsing.
+
+    foamFormatConvert reads system/controlDict writeFormat, so that is set to ascii first.
+    Only call after the solve has finished. No-op when already ascii.
+    """
+    case_dir = Path(case_dir)
+    probes = [case_dir / "constant" / "polyMesh" / n for n in ("points", "faces", "owner")]
+    for t in foam_time_dirs(case_dir):
+        probes += [case_dir / t / n for n in ("p", "U", "T", "rho", "C")]
+    if not any(_foam_file_is_binary(f) for f in probes if f.is_file()):
+        return {"converted": False}
+    cd = case_dir / "system" / "controlDict"
+    if cd.is_file():
+        txt = cd.read_text(encoding="utf-8", errors="replace")
+        cd.write_text(re.sub(r"(writeFormat\s+)binary\s*;", r"\1ascii;", txt), encoding="utf-8")
+    rc = run_foam(["foamFormatConvert"], case_dir, "log.foamFormatConvert", foam_env())
+    left = [str(f) for f in probes if f.is_file() and _foam_file_is_binary(f)]
+    if rc != 0 or left:
+        raise RuntimeError(f"foamFormatConvert rc={rc}; still binary: {left[:3]}")
+    return {"converted": True, "rc": rc}
 
 
 def _boundary_start_nfaces(case_dir: Path) -> dict[str, tuple[int, int]]:
@@ -502,6 +535,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
     times = foam_time_dirs(case_dir)
     if not times:
         return {}
+    ensure_ascii_case(case_dir)
     latest = times[-1]
     tdir = case_dir / latest
     pvals = _parse_of_scalar(tdir / "p")

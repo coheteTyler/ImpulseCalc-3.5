@@ -462,6 +462,12 @@ def run_job(
     # Viz from real time dirs. Do not paint a wedge that failed checkMesh.
     viz: dict[str, Any] = {"pngs": [], "note": "matplotlib from real OF time dirs; no fake encoder"}
     try:
+        from .post import ensure_ascii_case
+
+        viz["ascii_convert"] = ensure_ascii_case(case_dir)
+    except Exception as exc:
+        viz["ascii_convert"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
         from viewer.plots import field_png, force_history_png, sequence_from_times, wall_cp_png
 
         if not flags.get("mesh_ok"):

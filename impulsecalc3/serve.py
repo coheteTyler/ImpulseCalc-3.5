@@ -92,12 +92,58 @@ def resolve_mesh_png() -> Path | None:
     return None
 
 
+# triangles.png is a 1D/preview product (write_preview), not a solve field plot.
+SOLVE_PLOT_NAMES = PLOT_NAMES - {"triangles.png"}
+_SOLVE_STARTED_AT: float | None = None
+
+
+def clear_field_plots() -> list[str]:
+    """Delete solve field PNGs from the plots dirs at solve start so stale images can't be served."""
+    global _SOLVE_STARTED_AT
+    _SOLVE_STARTED_AT = time.time()
+    gone: list[str] = []
+    for d in PLOT_DIRS:
+        for name in SOLVE_PLOT_NAMES:
+            fp = d / name
+            try:
+                if fp.is_file():
+                    fp.unlink()
+                    gone.append(str(fp))
+            except OSError:
+                pass
+    return gone
+
+
+def _field_plot_floor() -> float | None:
+    """Plots older than this (solve start, else latest case time dir) are stale."""
+    if _SOLVE_STARTED_AT is not None:
+        return _SOLVE_STARTED_AT
+    try:
+        mt = [p.stat().st_mtime for p in PREVIEW_CASE.iterdir() if p.is_dir() and _is_float(p.name) and p.name != "0"]
+    except OSError:
+        return None
+    return max(mt) - 5.0 if mt else None
+
+
+def _is_float(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
 def list_field_plots() -> list[dict[str, str]]:
-    """Existing CFD field PNGs for the Fields tab."""
+    """Existing CFD field PNGs for the Fields tab (only ones newer than the current solve)."""
     out: list[dict[str, str]] = []
+    floor = _field_plot_floor()
     for name in sorted(PLOT_NAMES):
-        if resolve_plot(name) is not None:
-            out.append({"name": name, "url": f"/plot/{name}"})
+        fp = resolve_plot(name)
+        if fp is None:
+            continue
+        if floor is not None and name in SOLVE_PLOT_NAMES and fp.stat().st_mtime < floor:
+            continue
+        out.append({"name": name, "url": f"/plot/{name}"})
     return out
 
 
@@ -1484,6 +1530,7 @@ class Handler(BaseHTTPRequestHandler):
                     ph = _state["phase"]
                 self._json(409, {"ok": False, "error": f"{ph} already running", "phase": ph})
                 return
+            clear_field_plots()
             t = threading.Thread(target=_solve_worker, args=(_effective_knobs(knobs),), daemon=True)
             t.start()
             self._json(
