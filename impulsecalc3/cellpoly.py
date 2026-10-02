@@ -65,10 +65,78 @@ def _cell_polys_cached(mesh_dir: str, mtime: float) -> tuple[np.ndarray, tuple[n
 
 
 def cell_polygons_m(case_dir: Path) -> list[np.ndarray]:
-    """Per-cell 2D outline (metres), index = OpenFOAM cell id."""
+    """Per-cell 2D outline (metres), index = owner cell id of constant/polyMesh."""
     d = Path(case_dir) / "constant" / "polyMesh"
     _, polys = _cell_polys_cached(str(d), (d / "faces").stat().st_mtime)
     return list(polys)
+
+
+def polygon_centroids(polys: list[np.ndarray]) -> np.ndarray:
+    """Area centroids (same definition as OpenFOAM C for a planar face)."""
+    out = np.empty((len(polys), 2))
+    for i, p in enumerate(polys):
+        x, y = p[:, 0], p[:, 1]
+        x1, y1 = np.roll(x, -1), np.roll(y, -1)
+        c = x * y1 - x1 * y
+        a = c.sum() / 2.0
+        if abs(a) < 1e-30:
+            out[i] = p.mean(axis=0)
+        else:
+            out[i] = (((x + x1) * c).sum() / (6 * a), ((y + y1) * c).sum() / (6 * a))
+    return out
+
+
+def latest_cell_centres_m(case_dir: Path) -> tuple[Path | None, np.ndarray | None]:
+    """C (writeCellCentres) from the latest time dir that has one, as N×2 metres."""
+    tds = []
+    for d in Path(case_dir).iterdir():
+        try:
+            tds.append((float(d.name), d))
+        except ValueError:
+            continue
+    for _, d in sorted(tds, reverse=True):
+        f = d / "C"
+        if f.is_file():
+            try:
+                txt = f.read_text(encoding="utf-8", errors="replace")
+                m = re.search(r"internalField\s+nonuniform\s+List<vector>\s*(\d+)\s*\(", txt)
+                if not m:
+                    return f, None
+                n = int(m.group(1))
+                vals = re.findall(r"\(\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+[-+0-9.eE]+\s*\)", txt[m.end():])[:n]
+                return f, np.array(vals, dtype=float)
+            except Exception:
+                return f, None
+    return None, None
+
+
+def align_polys_to_centres(polys: list[np.ndarray], cc_m: np.ndarray, tol_m: float = 1e-7):
+    """Return polys reordered so poly i has centroid == C[i] (field numbering).
+
+    The time-dir fields and C share one cell numbering. If constant/polyMesh was
+    renumbered (renumberMesh) after those fields were written, owner ids differ
+    from field ids; match by centroid so colours land on the right cell.
+    """
+    cen = polygon_centroids(polys)
+    if len(cen) != len(cc_m):
+        raise ValueError(f"cell count mismatch polys={len(cen)} C={len(cc_m)}")
+    err = np.hypot(*(cen - cc_m).T)
+    info: dict[str, Any] = {"direct_max_err_m": float(err.max())}
+    if err.max() <= tol_m:
+        info.update(reordered=False, max_err_m=float(err.max()))
+        return polys, info
+    idx = np.empty(len(cc_m), dtype=np.int64)
+    dmin = np.empty(len(cc_m))
+    for s0 in range(0, len(cc_m), 512):
+        blk = cc_m[s0:s0 + 512]
+        d2 = (blk[:, None, 0] - cen[None, :, 0]) ** 2 + (blk[:, None, 1] - cen[None, :, 1]) ** 2
+        j = np.argmin(d2, axis=1)
+        idx[s0:s0 + 512] = j
+        dmin[s0:s0 + 512] = np.sqrt(d2[np.arange(len(j)), j])
+    if dmin.max() > tol_m or len(np.unique(idx)) != len(idx):
+        raise ValueError(f"polyMesh cells do not match C (nn max {dmin.max():.3g} m)")
+    info.update(reordered=True, max_err_m=float(dmin.max()))
+    return [polys[j] for j in idx], info
 
 
 class CellDomain:
@@ -77,7 +145,13 @@ class CellDomain:
     def __init__(self, case_dir: Path, pitch_mm: float, n_viz: int):
         import matplotlib.tri as mtri
 
-        base = [p * 1000.0 for p in cell_polygons_m(case_dir)]
+        polys_m = cell_polygons_m(case_dir)
+        self.check: dict[str, Any] = {"reordered": False, "max_err_m": None}
+        c_file, cc_m = latest_cell_centres_m(case_dir)
+        if cc_m is not None:
+            polys_m, self.check = align_polys_to_centres(polys_m, cc_m)
+            self.check["C_file"] = str(c_file)
+        base = [p * 1000.0 for p in polys_m]
         self.n_cells = len(base)
         self.pitch_mm = float(pitch_mm)
         self.n_viz = max(int(n_viz or 1), 1)
@@ -172,14 +246,28 @@ class CellDomain:
 _DOM_CACHE: dict[tuple, CellDomain] = {}
 
 
+def _is_num(name: str) -> bool:
+    try:
+        float(name)
+        return True
+    except ValueError:
+        return False
+
+
 def try_domain(case_dir: Path | None, pitch_mm: float, n_viz: int) -> CellDomain | None:
     """Cached CellDomain, or None if the polyMesh cannot be read as 2D cells."""
     if case_dir is None:
         return None
     try:
         faces = Path(case_dir) / "constant" / "polyMesh" / "faces"
+        c_mt = 0.0
+        try:
+            tdc = sorted((float(d.name), d) for d in Path(case_dir).iterdir() if _is_num(d.name) and (d / "C").is_file())
+            c_mt = (tdc[-1][1] / "C").stat().st_mtime if tdc else 0.0
+        except Exception:
+            pass
         key = (str(Path(case_dir).resolve()), round(float(pitch_mm or 0.0), 9), max(int(n_viz or 1), 1),
-               faces.stat().st_mtime)
+               faces.stat().st_mtime, c_mt)
         if key not in _DOM_CACHE:
             _DOM_CACHE.clear()
             _DOM_CACHE[key] = CellDomain(Path(case_dir), pitch_mm, n_viz)
