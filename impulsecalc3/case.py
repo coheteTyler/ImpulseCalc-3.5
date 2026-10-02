@@ -402,6 +402,9 @@ def _resolve_inlet_thermo(job: dict[str, Any], ml: Meanline) -> dict[str, float]
       field, but the inlet patch carries totalPressure p0=Pt,rel, totalTemperature
       T0=T+W^2/(2cp) and pressureDirectedInletVelocity along beta1 (subsonic axial
       inflow: 3 conditions in, 1 out -> no over-specified/reflecting inlet).
+    - inlet_bc == "fixed_UT_zgp": same static state / W1 as static_rel; inlet patch
+      carries fixedValue U=(W cos b1, W sin b1, 0), fixedValue T=t1, zeroGradient p
+      (p floats from the interior; robust where total_dir let the inlet U run away).
     """
     import math
     gas = job["gas"]
@@ -415,7 +418,7 @@ def _resolve_inlet_thermo(job: dict[str, Any], ml: Meanline) -> dict[str, float]
     mode = str(cfd.get("inlet_bc") or gas.get("inlet_bc") or ("total_rel" if gas.get("pt_rel_pa") not in (None, "") else "static_rel"))
     beta = float(ml.beta1_flow_deg)
     rad = math.radians(beta)
-    if mode in ("static_rel", "total_dir"):
+    if mode in ("static_rel", "total_dir", "fixed_UT_zgp"):
         p_s = float(gas["p1_pa"])
         t_s = float(gas["t1_k"])
         wx, wy = float(ml.wx1), float(ml.wy1)
@@ -541,6 +544,10 @@ def write_fields(case_dir: Path, job: dict[str, Any], ml: Meanline) -> None:
             f"                value           uniform {t1:.8g};\n"
             "            }"
         )
+    elif inlet_mode == "fixed_UT_zgp":
+        u_in = f"inlet  {{ type fixedValue; value uniform ({wx:.8g} {wy:.8g} 0); }}"
+        p_in = "inlet  { type zeroGradient; }"
+        t_in = f"inlet  {{ type fixedValue; value uniform {t1:.8g}; }}"
     else:
         u_in = f"inlet  {{ type fixedValue; value uniform ({wx:.8g} {wy:.8g} 0); }}"
         p_in = f"inlet  {{ type fixedValue; value uniform {p1:.8g}; }}"
@@ -854,7 +861,8 @@ def _write_case_unlocked(
         "inlet_U": ("pressureDirectedInletVelocity along (cos β1, sin β1, 0)"
                     if (job.get("_inlet_resolved") or {}).get("mode") == "total_dir"
                     else "fixedValue relative W from job β1: (W*cos(β1°), W*sin(β1°), 0)"),
-        "inlet_p_type": ("totalPressure p0=Pt,rel gamma" if (job.get("_inlet_resolved") or {}).get("mode") == "total_dir" else "fixedValue"),
+        "inlet_p_type": ("totalPressure p0=Pt,rel gamma" if (job.get("_inlet_resolved") or {}).get("mode") == "total_dir"
+                         else "zeroGradient" if (job.get("_inlet_resolved") or {}).get("mode") == "fixed_UT_zgp" else "fixedValue"),
         "inlet_T_type": ("totalTemperature T0=T+W^2/(2cp) gamma" if (job.get("_inlet_resolved") or {}).get("mode") == "total_dir" else "fixedValue"),
         "inlet_Tt_rel": float((job.get("_inlet_resolved") or {}).get("tt", job["gas"]["t1_k"])),
         "outlet_U": ("inletOutlet inletValue (0 0 0)" if str(job["cfd"].get("outlet_U", "zeroGradient")) == "inletOutlet"

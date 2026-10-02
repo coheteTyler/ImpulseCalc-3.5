@@ -488,8 +488,9 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         cfd["x_up_c"] = 2.5
         # inlet block cells: 80 W cells keeps the W-block ratio ~1.03 to x=-2.5c
         cfd.setdefault("curved", {}).setdefault("n_w", 80)
-    # Non-reflecting-ish subsonic-axial inlet: totalPressure/totalTemperature/direction.
-    cfd["inlet_bc"] = str(k.get("inlet_bc") or "total_dir")
+    # fixedValue U (W1 along beta1) + fixedValue T + zeroGradient p. total_dir
+    # (totalPressure/totalTemperature/direction) let the inlet U run away (T0<0).
+    cfd["inlet_bc"] = str(k.get("inlet_bc") or "fixed_UT_zgp")
     if k.get("x_dn_c") in (None, ""):
         cfd["x_dn_c"] = 2.5
     if k.get("n_outlet") in (None, ""):
