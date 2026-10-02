@@ -88,6 +88,7 @@ def field_png(
     xlim_m: tuple[float, float] | None = None,
     pitch_m: float | None = None,
     n_viz: int = 1,
+    case_dir: Path | None = None,
 ) -> Path | None:
     if cc.size == 0 or values.size == 0:
         return None
@@ -110,7 +111,21 @@ def field_png(
         x = np.concatenate(xs)
         y = np.concatenate(ys)
         vals = np.concatenate(vs)
-    sc = ax.scatter(x, y, c=vals, s=6, cmap="coolwarm", linewidths=0)
+    dom = None
+    if case_dir is not None:
+        # Real cell polygons: only the meshed domain is coloured (no hull fill).
+        try:
+            from impulsecalc3.cellpoly import try_domain
+            pmm = float(pitch_m) * 1000.0 if (pitch_m and float(pitch_m) > 0) else 0.0
+            dom = try_domain(case_dir, pmm, nv if pmm > 0 else 1)
+        except Exception:
+            dom = None
+        if dom is not None and len(dom.polys) != len(vals):
+            dom = None
+    if dom is not None:
+        sc = dom.draw(ax, vals, cmap="coolwarm")
+    else:
+        sc = ax.scatter(x, y, c=vals, s=6, cmap="coolwarm", linewidths=0)
     fig.colorbar(sc, ax=ax, label=cbar, shrink=0.85)
     if blade_polys:
         # Opaque metal fill; tile ×n_viz when live mesh is 1-pitch (Freeze B).
@@ -126,7 +141,9 @@ def field_png(
     ax.set_xlabel("x axial [mm]")
     ax.set_ylabel("y pitch [mm]")
     ax.set_title(title)
-    if xlim_m is not None:
+    if dom is not None:
+        dom.set_limits(ax, (xlim_m[0] * 1000.0, xlim_m[1] * 1000.0) if xlim_m is not None else None)
+    elif xlim_m is not None:
         ax.set_xlim(xlim_m[0] * 1000.0, xlim_m[1] * 1000.0)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +178,7 @@ def sequence_from_times(
                 title=f"p  t={t:.4g} s  (real time dir)",
                 cbar="p [Pa]",
                 blade_polys=blade_polys,
+                case_dir=case_dir,
             )
             if png:
                 written.append(str(png))
@@ -173,6 +191,7 @@ def sequence_from_times(
                 title=f"|U|  t={t:.4g} s  (real time dir)",
                 cbar="|U| [m/s]",
                 blade_polys=blade_polys,
+                case_dir=case_dir,
             )
             if png:
                 written.append(str(png))

@@ -586,10 +586,42 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
     else:
         x, y, p = _stack_field_arrays(x, y, p, pitch_mm=_pmm, n_viz=_n_viz)
     n_field = len(x)
+    # Real cell polygons (one z-plane face loop per cell, stacked ×n_viz):
+    # colour only meshed area, never the Delaunay convex hull of centres.
+    from .cellpoly import try_domain
+    dom = try_domain(case_dir, _pmm, _n_viz)
+    if dom is not None and len(dom.polys) != n_field:
+        dom = None
+
+    def _limits(ax_):
+        lim = _crop_cascade_ax(ax_, job)
+        if dom is not None:
+            dom.set_limits(ax_, lim)
+
+    def _paint(ax_, vals, *, cmap, **kw):
+        if dom is not None:
+            return dom.draw(ax_, vals, cmap=cmap, **kw)
+        return ax_.scatter(x, y, c=vals, s=6, cmap=cmap, linewidths=0, **kw)
+
+    def _clip(ax_, *artists):
+        if dom is None:
+            return
+        arts = []
+        for a in artists:
+            if a is None:
+                continue
+            if hasattr(a, "lines"):  # StreamplotSet
+                arts.extend([a.lines, a.arrows])
+            elif hasattr(a, "collections") and not hasattr(a, "set_clip_path"):
+                arts.extend(a.collections)
+            else:
+                arts.append(a)
+        dom.clip_artists(ax_, arts)
+
     fig, ax = plt.subplots(figsize=(8, 4.2), dpi=120)
-    sc = ax.scatter(x, y, c=p / 1e5, s=6, cmap="coolwarm", linewidths=0)
+    sc = _paint(ax, p / 1e5, cmap="coolwarm")
     ax.set_aspect("equal")
-    _crop_cascade_ax(ax, job)
+    _limits(ax)
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
     ax.set_title(f"p [bar]  t={latest} s  (cell centres, real solve)")
@@ -612,7 +644,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
                 qu.append(float(ux[j]) / mag)
                 qv.append(float(uy[j]) / mag)
             if qx:
-                ax.quiver(
+                _q = ax.quiver(
                     qx, qy, qu, qv,
                     color="#111",
                     angles="xy",
@@ -621,6 +653,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
                     width=0.008,
                     zorder=5,
                 )
+                _clip(ax, _q)
                 ax.text(
                     xmin + 0.02 * xspan,
                     float(np.max(qy)) if qy else float(y.max()),
@@ -636,9 +669,9 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
     if ux is not None and len(ux) == n_field:
         umag = np.hypot(ux, uy)
         fig, ax = plt.subplots(figsize=(8, 4.2), dpi=120)
-        sc = ax.scatter(x, y, c=umag, s=6, cmap="viridis", linewidths=0)
+        sc = _paint(ax, umag, cmap="viridis")
         ax.set_aspect("equal")
-        _crop_cascade_ax(ax, job)
+        _limits(ax)
         ax.set_xlabel("x [mm]")
         ax.set_ylabel("y pitch [mm]")
         ax.set_title(f"U field  |U| color + arrows  t={latest} s  (OF cell centres)")
@@ -646,10 +679,11 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         n = len(x)
         step = max(1, n // 140)
         mag = np.maximum(umag, 1e-9)
-        ax.quiver(
+        _q = ax.quiver(
             x[::step], y[::step], ux[::step] / mag[::step], uy[::step] / mag[::step],
             color="#111", angles="xy", scale_units="xy", scale=0.18, width=0.004, zorder=5,
         )
+        _clip(ax, _q)
         fig.tight_layout()
         fu = out_dir / "contour_U.png"
         fig.savefig(fu)
@@ -657,6 +691,13 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         paths["contour_U"] = str(fu)
         import matplotlib.tri as mtri
         triang = mtri.Triangulation(x, y)
+        if dom is not None:
+            # Drop Delaunay triangles that bridge non-domain (concave gaps
+            # outside the curved periodic line, blade hole).
+            _t = triang.triangles
+            _cx = x[_t].mean(axis=1)
+            _cy = y[_t].mean(axis=1)
+            triang.set_mask(~dom.contains(_cx, _cy))
         blade_polys_m = _blade_polys_for_plot(job)
         xlo, xhi = float(x.min()), float(x.max())
         if job:
@@ -668,8 +709,14 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
                 pass
         xi = np.linspace(xlo, xhi, 180)
         n_yi = max(140, int(140 * max(_n_viz, 1) * 0.85))
-        yi = np.linspace(float(y.min()), float(y.max()), n_yi)
+        if dom is not None:
+            xlo, xhi = max(xlo, dom.xmin), min(xhi, dom.xmax)
+            xi = np.linspace(xlo, xhi, 180)
+            yi = np.linspace(dom.ymin, dom.ymax, n_yi)
+        else:
+            yi = np.linspace(float(y.min()), float(y.max()), n_yi)
         X, Y = np.meshgrid(xi, yi)
+        in_dom = dom.contains(X, Y) if dom is not None else np.ones(X.shape, dtype=bool)
         Ui = np.ma.filled(mtri.LinearTriInterpolator(triang, ux)(X, Y), np.nan)
         Vi = np.ma.filled(mtri.LinearTriInterpolator(triang, uy)(X, Y), np.nan)
         wx1 = float(np.median(ux[x <= (float(x.min()) + 0.12 * (float(x.max()) - float(x.min())))]))
@@ -678,7 +725,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         departed = np.hypot(Ui - wx1, Vi - wy1) > 0.08 * w1
         inlet_strip = X <= (float(x.min()) + 0.18 * (float(x.max()) - float(x.min())))
         # Do not paint leftover IC / cloned inlet W downstream of the inlet strip.
-        show = inlet_strip | departed
+        show = (inlet_strip | departed) & in_dom
         Ui_s = np.where(show, Ui, np.nan)
         Vi_s = np.where(show, Vi, np.nan)
         _bp = _blade_polys_for_plot(job)
@@ -686,16 +733,22 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         Vi_s = _mask_field_through_metal(X, Y, Vi_s, _bp)
         speed = np.hypot(np.nan_to_num(Ui_s, nan=0.0), np.nan_to_num(Vi_s, nan=0.0))
         fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
-        _spd = _mask_field_through_metal(X, Y, np.hypot(Ui_s, Vi_s), _blade_polys_for_plot(job))
-        cf = ax.contourf(X, Y, np.ma.masked_invalid(_spd), levels=24, cmap="turbo")
-        ax.streamplot(
+        if dom is not None:
+            _xr = float(x.max()) - float(x.min())
+            _show_c = (x <= float(x.min()) + 0.18 * _xr) | (np.hypot(ux - wx1, uy - wy1) > 0.08 * w1)
+            cf = dom.draw(ax, np.where(_show_c, umag, np.nan), cmap="turbo")
+        else:
+            _spd = _mask_field_through_metal(X, Y, np.hypot(Ui_s, Vi_s), _blade_polys_for_plot(job))
+            cf = ax.contourf(X, Y, np.ma.masked_invalid(_spd), levels=24, cmap="turbo")
+        _sp = ax.streamplot(
             xi, yi,
-            np.nan_to_num(Ui_s, nan=0.0), np.nan_to_num(Vi_s, nan=0.0),
+            np.ma.masked_invalid(Ui_s), np.ma.masked_invalid(Vi_s),
             color=np.where(show, speed, 0.0), cmap="turbo", density=1.4, linewidth=0.85, arrowsize=0.85,
         )
+        _clip(ax, _sp)
         _draw_metal(ax, _blade_polys_for_plot(job))
         ax.set_aspect("equal")
-        _crop_cascade_ax(ax, job)
+        _limits(ax)
         ax.set_xlabel("x [mm]")
         ax.set_ylabel("y pitch [mm]")
         ax.set_title(f"2D streamlines  |U| color  t={latest} s  (OF U, slider mesh)")
@@ -725,16 +778,20 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             mach = umag / np.maximum(a_loc, 1.0)
             Mi = np.ma.filled(mtri.LinearTriInterpolator(triang, mach)(X, Y), np.nan)
             fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
-            Mi = _mask_field_through_metal(X, Y, Mi, blade_polys_m)
-            cf = ax.contourf(X, Y, np.ma.masked_invalid(Mi), levels=24, cmap="turbo")
-            ax.streamplot(
+            if dom is not None:
+                cf = dom.draw(ax, mach, cmap="turbo")
+            else:
+                Mi = _mask_field_through_metal(X, Y, Mi, blade_polys_m)
+                cf = ax.contourf(X, Y, np.ma.masked_invalid(Mi), levels=24, cmap="turbo")
+            _sp = ax.streamplot(
                 xi, yi,
-                np.nan_to_num(Ui_s, nan=0.0), np.nan_to_num(Vi_s, nan=0.0),
+                np.ma.masked_invalid(Ui_s), np.ma.masked_invalid(Vi_s),
                 color="k", density=0.9, linewidth=0.5, arrowsize=0.7,
             )
+            _clip(ax, _sp)
             _fill_blades(ax)
             ax.set_aspect("equal")
-            _crop_cascade_ax(ax, job)
+            _limits(ax)
             ax.set_xlabel("x [mm]")
             ax.set_ylabel("y pitch [mm]")
             ax.set_title(f"Mach  t={latest} s  ( |U|/a from OF p,rho )  PREDICTED")
@@ -748,6 +805,13 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         # yi is rows, xi is cols. np.gradient(f, *spacing) with f[row,col]
         dpy, dpx = np.gradient(np.nan_to_num(Pi, nan=0.0), yi, xi)
         sch = np.hypot(dpx, dpy)
+        sch_c = None
+        if dom is not None:
+            # Per-cell |grad p| from the domain-only triangulation of centres.
+            _gx, _gy = mtri.LinearTriInterpolator(triang, p).gradient(x, y)
+            sch_c = np.ma.filled(np.hypot(_gx, _gy), np.nan)
+            _xs = float(x.max()) - float(x.min())
+            interior_c = (x > float(x.min()) + 1.5) & (x < float(x.max()) - 1.5) & (y > dom.ymin + 0.5) & (y < dom.ymax - 0.5)
         # Inlet/outlet patch lines dominate linear max. Log color + many hues
         # so weaker passage jumps still get a distinct band. Not KO.
         from matplotlib.colors import LogNorm
@@ -761,6 +825,8 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         )
         finite = np.isfinite(sch) & interior & (sch > 0)
         pos = sch[finite]
+        if sch_c is not None:
+            pos = sch_c[np.isfinite(sch_c) & interior_c & (sch_c > 0)]
         if pos.size > 50:
             vmin = float(np.nanpercentile(pos, 8))
             vmax = float(np.nanpercentile(pos, 92))
@@ -773,23 +839,36 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             vmax = vmin * 10.0
         levels = np.logspace(np.log10(vmin), np.log10(vmax), 64)
         fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
-        cf = ax.contourf(
-            X, Y, np.ma.masked_less_equal(np.ma.masked_invalid(sch), 0),
-            levels=levels,
-            cmap="turbo",
-            norm=LogNorm(vmin=vmin, vmax=vmax),
-            extend="both",
-        )
-        ax.contour(
-            X, Y, np.nan_to_num(sch, nan=0.0),
-            levels=np.logspace(np.log10(vmin), np.log10(vmax), 10),
-            colors="k",
-            linewidths=0.25,
-            alpha=0.45,
-        )
+        if sch_c is not None:
+            from matplotlib.colors import BoundaryNorm
+            import matplotlib as _mpl
+            _cmap = _mpl.colormaps["turbo"].with_extremes(under=_mpl.colormaps["turbo"](0.0), over=_mpl.colormaps["turbo"](1.0))
+            cf = dom.draw(ax, np.clip(np.nan_to_num(sch_c, nan=vmin), vmin * 0.5, None), cmap=_cmap,
+                          norm=BoundaryNorm(levels, _cmap.N, extend="both"))
+            _cl = ax.tricontour(
+                triang, np.nan_to_num(sch_c, nan=0.0),
+                levels=np.logspace(np.log10(vmin), np.log10(vmax), 10),
+                colors="k", linewidths=0.25, alpha=0.45,
+            )
+            _clip(ax, _cl)
+        else:
+            cf = ax.contourf(
+                X, Y, np.ma.masked_less_equal(np.ma.masked_invalid(sch), 0),
+                levels=levels,
+                cmap="turbo",
+                norm=LogNorm(vmin=vmin, vmax=vmax),
+                extend="both",
+            )
+            ax.contour(
+                X, Y, np.nan_to_num(sch, nan=0.0),
+                levels=np.logspace(np.log10(vmin), np.log10(vmax), 10),
+                colors="k",
+                linewidths=0.25,
+                alpha=0.45,
+            )
         _fill_blades(ax)
         ax.set_aspect("equal")
-        _crop_cascade_ax(ax, job)
+        _limits(ax)
         ax.set_xlabel("x [mm]")
         ax.set_ylabel("y pitch [mm]")
         ax.set_title(f"|grad p|  t={latest} s  (log turbo, 64 bands, not KO)  PREDICTED")
@@ -802,11 +881,14 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         if tv is not None and len(tv) == n_field:
             Ti = np.ma.filled(mtri.LinearTriInterpolator(triang, tv)(X, Y), np.nan)
             fig, ax = plt.subplots(figsize=(8, 4.2), dpi=110)
-            Ti = _mask_field_through_metal(X, Y, Ti, blade_polys_m)
-            cf = ax.contourf(X, Y, np.ma.masked_invalid(Ti), levels=24, cmap="inferno")
+            if dom is not None:
+                cf = dom.draw(ax, tv, cmap="inferno")
+            else:
+                Ti = _mask_field_through_metal(X, Y, Ti, blade_polys_m)
+                cf = ax.contourf(X, Y, np.ma.masked_invalid(Ti), levels=24, cmap="inferno")
             _fill_blades(ax)
             ax.set_aspect("equal")
-            _crop_cascade_ax(ax, job)
+            _limits(ax)
             ax.set_xlabel("x [mm]")
             ax.set_ylabel("y pitch [mm]")
             ax.set_title(f"T [K]  t={latest} s  (OF time-dir T)  PREDICTED")
@@ -831,9 +913,12 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
         if len(pv_a) != len(x):
             continue
         fig, ax = plt.subplots(figsize=(7, 3.6), dpi=90)
-        sc = ax.scatter(x, y, c=pv_a / 1e5, s=5, cmap="coolwarm", linewidths=0, vmin=p.min()/1e5, vmax=p.max()/1e5)
+        if dom is not None:
+            sc = dom.draw(ax, pv_a / 1e5, cmap="coolwarm", vmin=p.min()/1e5, vmax=p.max()/1e5)
+        else:
+            sc = ax.scatter(x, y, c=pv_a / 1e5, s=5, cmap="coolwarm", linewidths=0, vmin=p.min()/1e5, vmax=p.max()/1e5)
         ax.set_aspect("equal")
-        _crop_cascade_ax(ax, job)
+        _limits(ax)
         ax.set_title(f"p [bar] t={tname}")
         fig.colorbar(sc, ax=ax)
         fig.tight_layout()

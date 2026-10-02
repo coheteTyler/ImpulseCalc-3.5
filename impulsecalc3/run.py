@@ -493,6 +493,7 @@ def run_job(
                     blade_polys=mesh.blade_polys,
                     pitch_m=_pitch,
                     n_viz=_viz_n,
+                    case_dir=case_dir,
                 )
                 if png:
                     viz["pngs"].append(str(png))
@@ -509,6 +510,7 @@ def run_job(
                     blade_polys=mesh.blade_polys,
                     pitch_m=_pitch,
                     n_viz=_viz_n,
+                    case_dir=case_dir,
                 )
                 if png:
                     viz["pngs"].append(str(png))
