@@ -484,7 +484,12 @@ def knobs_to_job(knobs: dict[str, Any] | None = None, *, template: dict[str, Any
         if k.get(src) not in (None, ""):
             cfd[dst] = cast(k[src])
     if k.get("x_up_c") in (None, ""):
-        cfd["x_up_c"] = 0.95
+        # 2.5 chords upstream: LE waves (axial M ~0.6) decay before the inlet.
+        cfd["x_up_c"] = 2.5
+        # inlet block cells: 80 W cells keeps the W-block ratio ~1.03 to x=-2.5c
+        cfd.setdefault("curved", {}).setdefault("n_w", 80)
+    # Non-reflecting-ish subsonic-axial inlet: totalPressure/totalTemperature/direction.
+    cfd["inlet_bc"] = str(k.get("inlet_bc") or "total_dir")
     if k.get("x_dn_c") in (None, ""):
         cfd["x_dn_c"] = 2.5
     if k.get("n_outlet") in (None, ""):

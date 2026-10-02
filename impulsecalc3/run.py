@@ -34,6 +34,61 @@ from .sample import load_wall_pressure
 from .times import compute_times
 
 
+def _renumber_before_fields(case_dir: Path, env) -> None:
+    """renumberMesh with NO field dirs present, so the cell numbering of every field
+    written afterwards matches constant/polyMesh. 0/ (uniform init) is parked and restored."""
+    zero = case_dir / "0"
+    park = case_dir / ".0_parked_for_renumber"
+    if park.exists():
+        shutil.rmtree(park, ignore_errors=True)
+    if zero.is_dir():
+        zero.rename(park)
+    try:
+        run_foam(["renumberMesh", "-overwrite"], cwd=case_dir, log_name="log.renumberMesh", env=env)
+    finally:
+        if park.is_dir():
+            if zero.exists():
+                shutil.rmtree(zero, ignore_errors=True)
+            park.rename(zero)
+
+
+def outlet_reverse_flow(case_dir: Path) -> dict[str, Any]:
+    """Post check: count outlet faces with phi < 0 (inflow) in the latest time dir (ascii)."""
+    import re as _re
+    best = None
+    for d in case_dir.iterdir():
+        try:
+            t = float(d.name)
+        except ValueError:
+            continue
+        if t > 0 and (d / "phi").is_file() and (best is None or t > best[0]):
+            best = (t, d / "phi")
+    if best is None:
+        return {"checked": False, "note": "no phi in any time dir > 0"}
+    txt = best[1].read_text(encoding="utf-8", errors="replace")
+    m = _re.search(r"\boutlet\s*\{(.*?)\n\s*\}", txt, _re.S)
+    if not m:
+        return {"checked": False, "time": best[0], "note": "outlet patch not found in phi"}
+    body = m.group(1)
+    mu = _re.search(r"value\s+uniform\s+(\S+);", body)
+    if mu:
+        vals = [float(mu.group(1))]
+    else:
+        ml_ = _re.search(r"value\s+nonuniform\s+List<scalar>\s*(\d+)\s*\((.*?)\)", body, _re.S)
+        if not ml_:
+            return {"checked": False, "time": best[0], "note": "outlet phi values unparsed (binary?)"}
+        vals = [float(v) for v in ml_.group(2).split()]
+    neg = [v for v in vals if v < 0.0]
+    return {
+        "checked": True,
+        "time": best[0],
+        "n_faces": len(vals),
+        "n_reverse": len(neg),
+        "reverse_mass_frac": (abs(sum(neg)) / max(sum(abs(v) for v in vals), 1e-300)),
+        "flag": bool(neg),
+    }
+
+
 def _spec(job: dict[str, Any], ml) -> BladeSpec:
     spec = spec_from_job(job)
     spec.beta1_metal_deg = float(ml.beta1_metal_deg)
@@ -268,7 +323,7 @@ def run_job(
         # upperTriangularFace is a checkMesh fail on our hex dump; Cuthill-McKee is the fix.
         # Never renumber on skip_solve: time-dir fields would map to the wrong cells.
         if not reuse:
-            run_foam(["renumberMesh", "-overwrite"], cwd=case_dir, log_name="log.renumberMesh", env=env)
+            _renumber_before_fields(case_dir, env)
         rc_m = run_foam(["checkMesh", "-meshQuality"], cwd=case_dir, log_name="log.checkMesh", env=env)
         try:
             log_m = read_foam_log(case_dir, "log.checkMesh", "checkMesh")
@@ -333,7 +388,7 @@ def run_job(
                 job["cfd"]["constant_passage_width"] = False
                 job["geometry"]["constant_passage_width"] = False
                 mesh, t_end = write_case(case_dir, job, ml, times, spec)
-                run_foam(["renumberMesh", "-overwrite"], cwd=case_dir, log_name="log.renumberMesh", env=env)
+                _renumber_before_fields(case_dir, env)
                 rc_m = run_foam(["checkMesh", "-meshQuality"], cwd=case_dir, log_name="log.checkMesh", env=env)
                 log_m = read_foam_log(case_dir, "log.checkMesh", "checkMesh")
                 check = parse_checkmesh(log_m)
@@ -725,6 +780,12 @@ def run_job(
         except Exception as exc:
             of_st = {"error": f"{type(exc).__name__}: {exc}", "predicted": True, "eta_from_cfd": None}
     report["of_station"] = of_st
+    try:
+        report["outlet_reverse_flow"] = None if skip_solve else outlet_reverse_flow(case_dir)
+    except Exception as exc:
+        report["outlet_reverse_flow"] = {"checked": False, "note": f"{type(exc).__name__}: {exc}"}
+    if isinstance(report.get("outlet_reverse_flow"), dict) and report["outlet_reverse_flow"].get("flag"):
+        errors.append(f"outlet reverse flow on {report['outlet_reverse_flow']['n_reverse']} faces (PREDICTED)")
     report["Mw1_OF"] = (of_st or {}).get("Mw1_OF") if isinstance(of_st, dict) else None
     ft0 = blades_out[0].get("Ft_N") if blades_out else None
     try:
