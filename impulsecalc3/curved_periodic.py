@@ -405,7 +405,7 @@ def _ctrl_from_spacing(h: np.ndarray) -> np.ndarray:
 @dataclass
 class CurvedParams:
     n_pass: int = 120        # cells along U/D (Q → Q')
-    n_nose: int = 72         # cells along each nose O piece
+    n_nose: int = 96         # cells along each nose O piece (72 -> 96: LE/TE-circle wall cells <= ~25 um, per-cell turn of the ring lines < 8 deg)
     n_ext: int = 13          # extension layers beyond n_wall (O-ring); ring outer (singular corner nodes) >= 0.3 mm off the wall
     g_ext: float = 1.2
     n_fill: int = 14         # layers from O outer to periodic line in U/D
@@ -423,7 +423,7 @@ class CurvedParams:
     nose_end_growth: float = 1.15 # nose end cells = adjacent passage wall cell, growth <= this
     w_growth: float = 1.10        # W/E growth away from the blade composites (to a coarse plateau)
     h0_ratio: float = 1.2         # max ratio of first W/E cell width between neighbouring lines
-    nose_tip_fac: float = 0.7     # nose end cell at the LE/TE-circle (D) end, relative to the D wall cell
+    nose_tip_fac: float = 1.0     # nose end cell at the LE/TE-circle (D) end, relative to the D wall cell
     corner_fac: float = 1.3       # first-cell widening at the end-line/nose-outer corners
     corner_w: float = 2.0         # corner widening half-width [lines]
     inlet_uniform: float = 0.7    # inlet/outlet j-distribution: 0 = composite arc fraction, 1 = uniform
@@ -441,6 +441,9 @@ class CurvedParams:
     ring_win_fac: float = 0.8     # ring normal-averaging half-window grows by this x wall distance
     ring_win_cap: float = 1.0     # ... up to this wall distance (1 m = uncapped: grows through the whole ring)
     fill_tan: float = 0.6         # Hermite tangent length at the ring outer node (fraction of the fill chord)
+    end_feet_h: float = 25e-6     # U/D wall-foot spacing capped at this [m] at both line ends (next to the noses), 0 = off
+    end_feet_growth: float = 1.15 # ... the cap grows by this per foot into the passage (smooth grading to the passage spacing)
+    end_feet_lines: str = "D"     # which U/D lines get the end cap (D = inner lines, whose end feet sit on the LE/TE circles)
 
 
 @dataclass
@@ -602,7 +605,7 @@ def build_curved_periodic(
         # foot de-bunching: nearest-point feet collapse onto convex wall regions (LE tip on the
         # D side: 13 / 4 / 26 / 107 um). Smooth the foot spacing (Gaussian in index, total arc kept),
         # then cap the neighbour ratio; the lines stay within a few degrees of wall-normal.
-        def _smooth_feet(sig, PL):
+        def _smooth_feet(sig, PL, nm):
             u = np.unwrap(sig / L * 2 * np.pi) * L / (2 * np.pi)
             d = np.diff(u)
             sgn = 1.0 if d[0] > 0 else -1.0
@@ -618,14 +621,28 @@ def build_curved_periodic(
                 t *= tot / t.sum()
                 if np.max(np.maximum(t[1:] / t[:-1], t[:-1] / t[1:])) <= pr.feet_ratio * 1.001:
                     break
+            if pr.end_feet_h > 0 and nm in pr.end_feet_lines:
+                # nose refinement: cap the foot spacing at both line ends (the LE/TE-circle cells next to
+                # the noses) and grade the cap up by end_feet_growth; the passage spacing absorbs the rest
+                ii = np.arange(len(t))
+                cap = pr.end_feet_h * pr.end_feet_growth ** np.minimum(ii, len(t) - 1 - ii)
+                lo_, hi_ = 1.0, 4.0
+                for _ in range(80):
+                    sc_ = 0.5 * (lo_ + hi_)
+                    if np.minimum(t * sc_, cap).sum() > tot:
+                        hi_ = sc_
+                    else:
+                        lo_ = sc_
+                t = np.minimum(t * 0.5 * (lo_ + hi_), cap)
+                t *= tot / t.sum()
             un = u[0] + sgn * np.r_[0.0, np.cumsum(t)]
             un[-1] = u[-1]
             sg_ = np.mod(un, L)
             C = blade.at(sg_)
             return [(C[i], float(sg_[i]), float(np.hypot(*(PL[i] - C[i])))) for i in range(len(sg_))]
 
-        footU = _smooth_feet(sigU, PT)
-        footD = _smooth_feet(sigD, PB)
+        footU = _smooth_feet(sigU, PT, "U")
+        footD = _smooth_feet(sigD, PB, "D")
         sigU = np.array([f[1] for f in footU])
         sigD = np.array([f[1] for f in footD])
 
