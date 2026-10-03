@@ -593,6 +593,13 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
     if dom is not None and len(dom.polys) != n_field:
         dom = None
 
+    def _metal(ax_, polys_m):
+        # Outline/fill from the polyMesh wall patches (same pitch offsets as
+        # the cells); design-profile polys only when no mesh domain exists.
+        if dom is not None and dom.draw_metal(ax_):
+            return
+        _draw_metal(ax_, polys_m)
+
     def _limits(ax_):
         lim = _crop_cascade_ax(ax_, job)
         if dom is not None:
@@ -620,6 +627,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
 
     fig, ax = plt.subplots(figsize=(8, 4.2), dpi=120)
     sc = _paint(ax, p / 1e5, cmap="coolwarm")
+    _metal(ax, _blade_polys_for_plot(job))
     ax.set_aspect("equal")
     _limits(ax)
     ax.set_xlabel("x [mm]")
@@ -746,7 +754,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             color=np.where(show, speed, 0.0), cmap="turbo", density=1.4, linewidth=0.85, arrowsize=0.85,
         )
         _clip(ax, _sp)
-        _draw_metal(ax, _blade_polys_for_plot(job))
+        _metal(ax, _blade_polys_for_plot(job))
         ax.set_aspect("equal")
         _limits(ax)
         ax.set_xlabel("x [mm]")
@@ -773,7 +781,7 @@ def _try_field_contours(out_dir: Path, case_dir: Path, p1: float, w1: float, job
             a_loc = np.sqrt(gamma * rspec * tv)
         blade_polys_m = _blade_polys_for_plot(job)
         def _fill_blades(ax_):
-            _draw_metal(ax_, blade_polys_m)
+            _metal(ax_, blade_polys_m)
         if a_loc is not None:
             mach = umag / np.maximum(a_loc, 1.0)
             Mi = np.ma.filled(mtri.LinearTriInterpolator(triang, mach)(X, Y), np.nan)

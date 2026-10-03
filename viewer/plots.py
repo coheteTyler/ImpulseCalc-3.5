@@ -127,7 +127,10 @@ def field_png(
     else:
         sc = ax.scatter(x, y, c=vals, s=6, cmap="coolwarm", linewidths=0)
     fig.colorbar(sc, ax=ax, label=cbar, shrink=0.85)
-    if blade_polys:
+    if dom is not None and dom.draw_metal(ax, zorder=5):
+        # Metal outline from the polyMesh wall patches, stacked like the cells.
+        pass
+    elif blade_polys:
         # Opaque metal fill; tile ×n_viz when live mesh is 1-pitch (Freeze B).
         polys = list(blade_polys)
         if nv > 1 and pitch_m is not None and float(pitch_m) > 0 and len(polys) == 1:

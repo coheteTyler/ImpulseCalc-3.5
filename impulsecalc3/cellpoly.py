@@ -64,6 +64,66 @@ def _cell_polys_cached(mesh_dir: str, mtime: float) -> tuple[np.ndarray, tuple[n
     return pts[:, :2], tuple(polys)  # type: ignore[arg-type]
 
 
+def _wall_patches(mesh_dir: Path) -> list[tuple[str, int, int]]:
+    """(name, startFace, nFaces) of every ``type wall`` patch in polyMesh/boundary."""
+    txt = re.sub(r"/\*.*?\*/", "", (mesh_dir / "boundary").read_text(encoding="utf-8", errors="replace"), flags=re.S)
+    out = []
+    for m in re.finditer(r"(\w+)\s*\{([^{}]*)\}", txt):
+        body = m.group(2)
+        if re.search(r"\btype\s+wall\s*;", body):
+            nf = int(re.search(r"nFaces\s+(\d+)", body).group(1))
+            sf = int(re.search(r"startFace\s+(\d+)", body).group(1))
+            out.append((m.group(1), sf, nf))
+    return out
+
+
+@lru_cache(maxsize=4)
+def _wall_loops_cached(mesh_dir: str, mtime: float) -> tuple[tuple[np.ndarray, ...], np.ndarray]:
+    d = Path(mesh_dir)
+    pts = _read_points(d / "points")
+    faces = _read_faces(d / "faces")
+    zmin = float(pts[:, 2].min())
+    ztol = 1e-9 + 1e-6 * float(np.ptp(pts[:, 2]) or 1.0)
+    edges: list[tuple[int, int]] = []
+    wall_pts: set[int] = set()
+    for _name, sf, nf in _wall_patches(d):
+        for f in faces[sf:sf + nf]:
+            wall_pts.update(f)
+            lo = [v for v in f if abs(pts[v, 2] - zmin) <= ztol]
+            if len(lo) == 2:
+                edges.append((lo[0], lo[1]))
+    adj: dict[int, list[int]] = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    if any(len(v) != 2 for v in adj.values()):
+        raise ValueError("wall patch z-min edges do not form closed loops")
+    loops, seen = [], set()
+    for start in adj:
+        if start in seen:
+            continue
+        loop, prev, cur = [start], None, start
+        seen.add(start)
+        while True:
+            nxt = adj[cur][0] if adj[cur][0] != prev else adj[cur][1]
+            if nxt == start:
+                break
+            loop.append(nxt)
+            seen.add(nxt)
+            prev, cur = cur, nxt
+        loops.append(pts[loop, :2].copy())
+    wp = pts[sorted(wall_pts), :2] if wall_pts else np.empty((0, 2))
+    return tuple(loops), wp
+
+
+def wall_loops_m(case_dir: Path) -> tuple[list[np.ndarray], np.ndarray]:
+    """Ordered closed loops (metres) of the wall patches' z-min boundary edges,
+    taken from constant/polyMesh itself, plus all wall-patch points (2D)."""
+    d = Path(case_dir) / "constant" / "polyMesh"
+    loops, wp = _wall_loops_cached(str(d), (d / "faces").stat().st_mtime)
+    return list(loops), wp
+
+
 def cell_polygons_m(case_dir: Path) -> list[np.ndarray]:
     """Per-cell 2D outline (metres), index = owner cell id of constant/polyMesh."""
     d = Path(case_dir) / "constant" / "polyMesh"
@@ -139,6 +199,22 @@ def align_polys_to_centres(polys: list[np.ndarray], cc_m: np.ndarray, tol_m: flo
     return [polys[j] for j in idx], info
 
 
+def outline_gate_m(loops_mm: list[np.ndarray], wall_pts_m: np.ndarray, pitch_mm: float, n_viz: int) -> float:
+    """Max distance (m) of any drawn outline vertex to a polyMesh wall-patch point,
+    after removing the nearest pitch-copy offset."""
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(wall_pts_m)
+    worst = 0.0
+    for lp in loops_mm:
+        v = lp / 1000.0
+        best = np.full(len(v), np.inf)
+        for k in range(max(int(n_viz), 1)):
+            best = np.minimum(best, tree.query(v - [0.0, k * pitch_mm / 1000.0])[0])
+        worst = max(worst, float(best.max()))
+    return worst
+
+
 class CellDomain:
     """Cell polygons of one pitch stacked ×n_viz in y (mm), plus inside tests."""
 
@@ -177,6 +253,26 @@ class CellDomain:
         except Exception:
             self._finder = None
         self._base = base
+        # Metal outline from the mesh's own wall-patch faces, stacked with the
+        # same pitch offsets as the cells (never from the design profile).
+        self.wall_loops: list[np.ndarray] = []
+        try:
+            loops_m, wall_pts_m = wall_loops_m(case_dir)
+            for k in range(self.n_viz):
+                off = np.array([0.0, k * self.pitch_mm])
+                self.wall_loops.extend(lp * 1000.0 + off for lp in loops_m)
+            self.check["outline_max_dist_m"] = outline_gate_m(self.wall_loops, wall_pts_m, self.pitch_mm, self.n_viz)
+        except Exception as exc:  # noqa: BLE001
+            self.check["outline_error"] = f"{type(exc).__name__}: {exc}"
+        self.check["centroid_max_err_m"] = float(np.hypot(*(polygon_centroids(polys_m) - cc_m).T).max()) if cc_m is not None else None
+
+    def draw_metal(self, ax, zorder: float = 6) -> bool:
+        """Grey metal fill + outline from polyMesh wall patches (all pitch copies)."""
+        if not self.wall_loops:
+            return False
+        for lp in self.wall_loops:
+            ax.fill(lp[:, 0], lp[:, 1], facecolor="#c8c8c8", edgecolor="#222", lw=0.7, zorder=zorder)
+        return True
 
     def tile(self, vals) -> np.ndarray:
         v = np.asarray(vals, dtype=float)
