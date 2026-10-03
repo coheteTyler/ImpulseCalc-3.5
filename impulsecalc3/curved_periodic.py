@@ -308,23 +308,139 @@ def _tfi(S, N, W, E):
     return X
 
 
+def _bisect_scale(h0, cap, tot, floor=None):
+    """c such that sum(clip(c*h0, floor, cap)) == tot (cap.sum() must exceed tot)."""
+    fl = np.zeros_like(cap) if floor is None else np.minimum(floor, cap)
+    f = lambda c: np.minimum(np.maximum(c * h0, fl), cap)
+    lo, hi = 0.0, 1.0
+    while f(hi).sum() < tot:
+        hi *= 2.0
+    for _ in range(100):
+        c = 0.5 * (lo + hi)
+        if f(c).sum() < tot:
+            lo = c
+        else:
+            hi = c
+    t = f(hi)
+    return t * (tot / t.sum())
+
+
+def _limit_ratio(t: np.ndarray, r: float) -> np.ndarray:
+    """Forward/backward sweep so adjacent spacings differ by <= r (only shrinks cells)."""
+    t = np.array(t, dtype=float)
+    for k in range(1, len(t)):
+        t[k] = min(t[k], r * t[k - 1])
+    for k in range(len(t) - 2, -1, -1):
+        t[k] = min(t[k], r * t[k + 1])
+    return t
+
+
+def _grade_ends(sg: np.ndarray, ha: float, hb: float, r: float = 1.2) -> np.ndarray:
+    """Re-space a 1-D node distribution so the end cells are ha / hb and grow by <= r
+    into the interior shape (min(c*h_orig, ha r^k, hb r^(n-1-k)), rescaled to the length)."""
+    h0 = np.diff(sg)
+    tot = float(sg[-1] - sg[0])
+    n = len(h0)
+    k = np.arange(n)
+    cap = np.minimum(ha * r ** k, hb * r ** (n - 1 - k))
+    if cap.sum() <= tot:
+        return sg
+    # floor: the end cells are at least ha / hb (a curvature-clustered tip end would otherwise stay
+    # far below the passage wall cell it abuts), relaxing inward at r per cell
+    flo = np.minimum(np.maximum(ha * r ** (-k.astype(float)), hb * r ** (-(n - 1 - k).astype(float))), cap)
+    if flo.sum() >= tot:
+        flo = None
+    t = _bisect_scale(h0, cap, tot, floor=flo)
+    # the curvature-weighted interior can itself jump by >3x per cell: limit, re-fit, re-cap
+    for _ in range(400):
+        t = _limit_ratio(t, r)
+        t = np.minimum(t * (tot / t.sum()), cap)
+        if flo is not None:
+            t = np.maximum(t, flo)
+        if abs(t.sum() - tot) <= 1e-12 * tot:
+            break
+    t *= tot / t.sum()
+    out = sg[0] + np.r_[0.0, np.cumsum(t)]
+    out[-1] = sg[-1]
+    return out
+
+
+def _graded_dist(h0: float, L: float, n: int, r: float) -> np.ndarray:
+    """n cells over length L from the fine end: t_k = min(h0 r^k, cap), cap solved so sum = L
+    (growth <= r, then a steady coarse plateau). Falls back to a pure geometric ratio > r only
+    if n cells at r cannot reach L. Returns node arc positions 0..L."""
+    k = np.arange(n)
+    g = h0 * r ** k
+    if g.sum() <= L:
+        lo, hi = r, 4.0
+        for _ in range(100):
+            q = 0.5 * (lo + hi)
+            if (h0 * q ** k).sum() < L:
+                lo = q
+            else:
+                hi = q
+        t = h0 * hi ** k
+    else:
+        lo, hi = 0.0, float(g.max())
+        for _ in range(100):
+            c = 0.5 * (lo + hi)
+            if np.minimum(g, c).sum() < L:
+                lo = c
+            else:
+                hi = c
+        t = np.minimum(g, hi)
+    t = t * (L / t.sum())
+    out = np.r_[0.0, np.cumsum(t)]
+    out[-1] = L
+    return out
+
+
+def _ctrl_from_spacing(h: np.ndarray) -> np.ndarray:
+    """Thomas-Middlecoff-type 1-D source term at interior nodes: x_xixi + P x_xi = 0 for spacings h."""
+    rr = h[1:] / h[:-1]
+    return -2.0 * (rr - 1.0) / (rr + 1.0)
+
+
 # --------------------------------------------------------------------------- main builder
 @dataclass
 class CurvedParams:
     n_pass: int = 120        # cells along U/D (Q → Q')
-    n_nose: int = 64         # cells along each nose O piece
-    n_ext: int = 10          # extension layers beyond n_wall (O part)
-    g_ext: float = 1.15
+    n_nose: int = 72         # cells along each nose O piece
+    n_ext: int = 13          # extension layers beyond n_wall (O-ring); ring outer (singular corner nodes) >= 0.3 mm off the wall
+    g_ext: float = 1.2
     n_fill: int = 14         # layers from O outer to periodic line in U/D
-    n_w: int = 40            # W cells inlet → LE composite
-    n_e: int = 96            # E cells TE composite → outlet
+    n_w: int = 40            # W cells inlet → LE composite (graded=False only; graded derives it)
+    n_e: int = 96            # E cells TE composite → outlet (graded=False only; graded derives it)
     smooth_iter: int = 3000
     t_flat_up: float = -7.0e-3   # T flat for x <= this (relative to LE x=0 of chord)
     t_blend_up: float = -2.0e-3  # T equals smoothed medial curve for x >= this
     smooth_win: float = 0.6e-3   # medial smoothing half-window [m]
     nose_normal_win: float = 40e-6
     nose_curv_w: float = 1.0e-3   # curvature weight for nose wall node clustering [m]
-    nose_blend_n: int = 3         # nodes over which nose normals blend into the U/D end lines
+    nose_blend_n: int = 1         # nodes over which nose normals blend into the U/D end lines
+    # ---- physics-graded spacing (W/E: Winslow + Thomas-Middlecoff source terms)
+    graded: bool = True
+    nose_end_growth: float = 1.15 # nose end cells = adjacent passage wall cell, growth <= this
+    w_growth: float = 1.10        # W/E growth away from the blade composites (to a coarse plateau)
+    h0_ratio: float = 1.2         # max ratio of first W/E cell width between neighbouring lines
+    nose_tip_fac: float = 0.7     # nose end cell at the LE/TE-circle (D) end, relative to the D wall cell
+    corner_fac: float = 1.3       # first-cell widening at the end-line/nose-outer corners
+    corner_w: float = 2.0         # corner widening half-width [lines]
+    inlet_uniform: float = 0.7    # inlet/outlet j-distribution: 0 = composite arc fraction, 1 = uniform
+    q_clip: float = 0.6
+    respace_every: int = 50       # re-space W/E i-lines to the graded target every N smoothing sweeps
+    feet_smooth: float = 3.0      # Gaussian width [lines] for U/D wall-foot de-bunching
+    feet_ratio: float = 1.15      # max neighbour ratio of U/D wall-foot spacing
+    corner_rot_deg: float = 20.0  # end-line fill part leaves the O-outer corner turned this far into the passage
+    corner_rot_p: float = 6.0     # offset shape t (1-t)^p (concentrated near the corner)
+    corner_rot_m: int = 10        # columns over which the offset decays (cosine)
+    blend_k: float = 8.0          # W/E: per-line graded spacing near the composite -> common fraction far away
+    ortho_corner_w: float = 5.0   # ... but released over this many lines around each corner
+    ortho_k: float = 4.0          # W/E: rows pulled onto the composite normal (Gaussian width in rows)
+    ring_wall_normal: bool = True # continuous O-ring: U/D ring lines wall-normal like the noses, Hermite fill beyond
+    ring_win_fac: float = 0.8     # ring normal-averaging half-window grows by this x wall distance
+    ring_win_cap: float = 1.0     # ... up to this wall distance (1 m = uncapped: grows through the whole ring)
+    fill_tan: float = 0.6         # Hermite tangent length at the ring outer node (fraction of the fill chord)
 
 
 @dataclass
@@ -423,6 +539,20 @@ def build_curved_periodic(
     if clear < 2.0 * d_o:
         raise RuntimeError(f"periodic clearance {clear:.3g} m < 2*O thickness {d_o:.3g} m")
 
+    def ring(sig):
+        """Continuous O-ring nodes (m, nO+1, 2) above wall arc positions sig: layer k is stepped off
+        layer k-1 along the wall normal averaged over a window that widens with wall distance
+        (nose_normal_win + ring_win_fac * min(r_k, ring_win_cap)). Wall-normal at the wall; further out the LE/TE-circle
+        curvature jump is spread over several columns, so the ring's outer contour and its column
+        spacing stay smooth (a pure normal offset would jump by (1 + d kappa) at the circle tangency)."""
+        sig = np.asarray(sig, dtype=float)
+        X = np.empty((len(sig), nO + 1, 2))
+        X[:, 0] = blade.at(sig)
+        for k in range(1, nO + 1):
+            win = pr.nose_normal_win + pr.ring_win_fac * min(float(rO[k]), pr.ring_win_cap)
+            X[:, k] = X[:, k - 1] + float(rO[k] - rO[k - 1]) * blade.normal(sig, win)
+        return X
+
     # ---- Q / Q': periodic node at passage entrance/exit = T point nearest midpoint of min-gap segment
     dk, ik = cKDTree(D + [0.0, s]).query(D)
     # entrance side (x < mid) and exit side
@@ -468,27 +598,112 @@ def build_curved_periodic(
     if not (np.all(dsu < 0) and np.all(dsd > 0)):
         raise RuntimeError(f"wall feet not monotone (U dec ok={bool(np.all(dsu<0))}, D inc ok={bool(np.all(dsd>0))})")
 
+    if pr.graded:
+        # foot de-bunching: nearest-point feet collapse onto convex wall regions (LE tip on the
+        # D side: 13 / 4 / 26 / 107 um). Smooth the foot spacing (Gaussian in index, total arc kept),
+        # then cap the neighbour ratio; the lines stay within a few degrees of wall-normal.
+        def _smooth_feet(sig, PL):
+            u = np.unwrap(sig / L * 2 * np.pi) * L / (2 * np.pi)
+            d = np.diff(u)
+            sgn = 1.0 if d[0] > 0 else -1.0
+            d = np.abs(d)
+            tot = float(d.sum())
+            k = np.arange(-12, 13)
+            ker = np.exp(-0.5 * (k / pr.feet_smooth) ** 2)
+            ker /= ker.sum()
+            t = np.convolve(np.pad(d, 12, mode="reflect"), ker, mode="valid")
+            t *= tot / t.sum()
+            for _ in range(500):
+                t = _limit_ratio(t, pr.feet_ratio)
+                t *= tot / t.sum()
+                if np.max(np.maximum(t[1:] / t[:-1], t[:-1] / t[1:])) <= pr.feet_ratio * 1.001:
+                    break
+            un = u[0] + sgn * np.r_[0.0, np.cumsum(t)]
+            un[-1] = u[-1]
+            sg_ = np.mod(un, L)
+            C = blade.at(sg_)
+            return [(C[i], float(sg_[i]), float(np.hypot(*(PL[i] - C[i])))) for i in range(len(sg_))]
+
+        footU = _smooth_feet(sigU, PT)
+        footD = _smooth_feet(sigD, PB)
+        sigU = np.array([f[1] for f in footU])
+        sigD = np.array([f[1] for f in footD])
+
     def line_block(Pline, feet, n_fill):
         """(ni, nj) nodes: wall foot → O layers (rO) → fill → periodic node."""
         ni = len(Pline)
         nj = nO + n_fill + 1
         X = np.zeros((ni, nj, 2))
         qs = []
+        RG = ring(np.array([f[1] for f in feet])) if pr.ring_wall_normal else None
+        uu = np.linspace(0.0, 1.0, 1201)[:, None]
+        h00, h10 = 2 * uu ** 3 - 3 * uu ** 2 + 1, uu ** 3 - 2 * uu ** 2 + uu
+        h01, h11 = -2 * uu ** 3 + 3 * uu ** 2, uu ** 3 - uu ** 2
         for i, (p, (c, _sg, h)) in enumerate(zip(Pline, feet)):
-            n = (p - c) / h
-            fill, q = _fill_geometric(d_o, h_lastO, h - d_o, n_fill)
-            qs.append(q)
-            r = np.r_[rO, fill]
-            X[i] = c[None, :] + r[:, None] * n[None, :]
+            if RG is None:
+                n = (p - c) / h
+                fill, q = _fill_geometric(d_o, h_lastO, h - d_o, n_fill)
+                qs.append(q)
+                r = np.r_[rO, fill]
+                X[i] = c[None, :] + r[:, None] * n[None, :]
+            else:
+                # continuous O-ring: the ring part of every U/D line is exactly wall-normal (the same
+                # normal the nose pieces use), so ring lines run on unbroken around the noses; the fill
+                # part leaves the ring outer node tangent to the normal (cubic Hermite) and bends
+                # smoothly onto the periodic node (no kink at the ring outer edge)
+                X[i, : nO + 1] = RG[i]
+                F_ = X[i, nO]
+                n = X[i, nO] - X[i, nO - 1]
+                n = n / np.hypot(*n)
+                v = p - F_
+                Lc = float(np.hypot(*v))
+                Cv = h00 * F_ + h10 * (n * Lc * pr.fill_tan) + h01 * p + h11 * v
+                sa = np.r_[0.0, np.cumsum(np.hypot(*np.diff(Cv, axis=0).T))]
+                fill, q = _fill_geometric(0.0, h_lastO, float(sa[-1]), n_fill)
+                qs.append(q)
+                X[i, nO + 1:] = np.c_[np.interp(fill, sa, Cv[:, 0]), np.interp(fill, sa, Cv[:, 1])]
             X[i, -1] = p  # exact periodic node
         return X, qs
 
     XU, qU = line_block(PT, footU, pr.n_fill)       # j=0 wall (outer), j=-1 top periodic
     XD, qD = line_block(PB, footD, pr.n_fill)       # j=0 wall (inner), j=-1 bottom periodic
+
+    def _round_corner(X, at_end):
+        """Turn the fill part of the end line (O-outer corner F -> periodic node) into the block by
+        corner_rot_deg at F, so the inlet/outlet block gets ~90+rot deg at F instead of 90 (the
+        valence-5 corner no longer squashes its two wedge cells). Offset L tan(rot) t (1-t)^p along
+        the in-block direction, decayed over corner_rot_m columns; F, the O layers and the periodic
+        node are untouched."""
+        if pr.corner_rot_deg <= 0:
+            return X
+        ni = X.shape[0]
+        i0, step = (ni - 1, -1) if at_end else (0, 1)
+        F_, Qn = X[i0, nO], X[i0, -1]
+        dv = Qn - F_
+        Lf = float(np.hypot(*dv))
+        dv = dv / Lf
+        e = X[i0 + step, nO] - F_
+        e = e - (e @ dv) * dv
+        e = e / np.hypot(*e)
+        A = Lf * math.tan(math.radians(pr.corner_rot_deg))
+        p_ = pr.corner_rot_p
+        for c in range(pr.corner_rot_m):
+            i = i0 + step * c
+            dec = 0.5 * (1 + math.cos(math.pi * c / pr.corner_rot_m))
+            seg = X[i, nO:]
+            t = np.r_[0, np.cumsum(np.hypot(*np.diff(seg, axis=0).T))]
+            t = t / t[-1]
+            X[i, nO:] = seg + (dec * A * t * (1 - t) ** p_)[:, None] * e[None, :]
+        return X
+
+    if pr.graded:
+        for _X in (XU, XD):
+            _round_corner(_X, False)
+            _round_corner(_X, True)
     notes.append(f"U/D fill ratio q in [{min(qU+qD):.3f}, {max(qU+qD):.3f}]; O layers {nO} (n_wall {n_wall} growth {growth} + {pr.n_ext} ext @ {pr.g_ext}); d_o={d_o*1e6:.1f} um")
 
     # ---- nose O pieces (CCW on loop)
-    def nose_block(sig_a, n_a, sig_b, n_b, n_cells):
+    def nose_block(sig_a, n_a, sig_b, n_b, n_cells, ha=None, hb=None):
         """Wall from σ_a CCW to σ_b; normals blended to n_a / n_b at ends."""
         sb = sig_b if sig_b > sig_a else sig_b + L
         # curvature-weighted distribution
@@ -499,6 +714,8 @@ def build_curved_periodic(
         wts = 1.0 + pr.nose_curv_w * kap  # kap in 1/m; cap r≈0.18 mm → kap≈5.6e3
         cw = np.r_[0, np.cumsum(0.5 * (wts[1:] + wts[:-1]) * np.diff(ss))]
         sg = np.interp(np.linspace(0, cw[-1], n_cells + 1), cw, ss)
+        if ha is not None and hb is not None:
+            sg = _grade_ends(sg, ha, hb, pr.nose_end_growth)
         Wn = blade.at(sg)
         Nn = blade.normal(sg, pr.nose_normal_win)
         # blend ends to exact line directions
@@ -513,6 +730,8 @@ def build_curved_periodic(
         Wn[0] = XA0
         Wn[-1] = XB0
         X = Wn[:, None, :] + rO[None, :, None] * Nn[:, None, :]
+        if pr.ring_wall_normal:
+            X = ring(sg)   # same ring generator as the U/D ring parts: ring lines continue unbroken
         return X
 
     nU0 = (XU[0, 1] - XU[0, 0]); nU0 /= np.hypot(*nU0)
@@ -525,11 +744,24 @@ def build_curved_periodic(
         _dev.append(float(np.degrees(np.arccos(np.clip(_nn @ _n, -1, 1)))))
     notes.append("end-line vs wall-normal deviation deg (U0,D0,Ue,De): " + ", ".join(f"{d:.1f}" for d in _dev))
     # LE nose: from U foot 0 (outer) CCW to D foot 0 (inner)
+    def _sarc(a_, b_):
+        d_ = (a_ - b_) % L
+        return float(min(d_, L - d_))
+
+    if pr.graded:
+        haL, hbL = _sarc(sigU[1], sigU[0]), _sarc(sigD[1], sigD[0])
+        haT, hbT = _sarc(sigD[-1], sigD[-2]), _sarc(sigU[-1], sigU[-2])
+        # the D end lines start on the convex LE/TE circle: the nose wall-normal fan widens the
+        # end column outward by ~(1 + d_o/R) while the D column does not; balance wall vs O outer
+        hbL *= pr.nose_tip_fac
+        haT *= pr.nose_tip_fac
+    else:
+        haL = hbL = haT = hbT = None
     XA0, XB0 = XU[0, 0], XD[0, 0]
-    XNL = nose_block(sigU[0], nU0, sigD[0], nD0, pr.n_nose)
+    XNL = nose_block(sigU[0], nU0, sigD[0], nD0, pr.n_nose, haL, hbL)
     # TE nose: from D foot end (inner) CCW to U foot end (outer)
     XA0, XB0 = XD[-1, 0], XU[-1, 0]
-    XNT = nose_block(sigD[-1], nDe, sigU[-1], nUe, pr.n_nose)
+    XNT = nose_block(sigD[-1], nDe, sigU[-1], nUe, pr.n_nose, haT, hbT)
     # force exact shared radial lines
     XNL[0] = XU[0, : nO + 1]
     XNL[-1] = XD[0, : nO + 1]
@@ -561,40 +793,26 @@ def build_curved_periodic(
             hs = hs[::-1]
         return xa + np.r_[0, np.cumsum(hs)], q
 
-    h_Q = float(np.hypot(*(PT[1] - PT[0])))
-    xW, qW = per_x(x_in, xQ, pr.n_w, h_Q, at_end=True)
-    xE, qE = per_x(xQ2, x_out, pr.n_e, float(np.hypot(*(PT[-1] - PT[-2]))), at_end=False)
-    south = np.c_[xW, Tof(xW) - s]
-    north = np.c_[xW, Tof(xW)]
-    ef = np.r_[0, np.cumsum(np.hypot(*np.diff(east, axis=0).T))]
-    ef /= ef[-1]
-    west = np.c_[np.full(nyW, x_in), (Tof(x_in) - s) + ef * s]
-    XW = _tfi(south, north, west, east)  # (ni=n_w+1, nj=nyW)
-    # E block: west composite (bottom → top): D line end Q'-s → O outer, TE nose outer CCW, U line end O outer → Q'
+    # E block composite (bottom → top): D line end Q'-s → O outer, TE nose outer CCW, U line end O outer → Q'
     wD = XD[-1, nO:][::-1]           # Q'-s ... F_De
     wN = XNT[:, -1]                  # F_De ... F_Ue
     wU = XU[-1, nO:]                 # F_Ue ... Q'
     westE = np.vstack([wD, wN[1:], wU[1:]])
     nyE = len(westE)
-    southE = np.c_[xE, Tof(xE) - s]
-    northE = np.c_[xE, Tof(xE)]
-    ef = np.r_[0, np.cumsum(np.hypot(*np.diff(westE, axis=0).T))]
-    ef /= ef[-1]
-    eastE = np.c_[np.full(nyE, x_out), (Tof(x_out) - s) + ef * s]
-    XE = _tfi(southE, northE, westE, eastE)
 
-    # ---- periodic-aware Laplacian smoothing of W / E interiors (+ periodic rows slide on T)
-    def smooth(X, fixed_i, n_iter, omega=0.8):
-        """Winslow (inverse-Laplace) elliptic smoothing, Jacobi iterations.
+    # ---- periodic-aware elliptic smoothing of W / E interiors (+ periodic rows slide on T)
+    def smooth(X, fixed_i, n_iter, omega=0.8, Pc=None, Qc=None):
+        """Winslow (inverse-Laplace) elliptic smoothing, Jacobi iterations, optional
+        Thomas-Middlecoff source terms: a(x_xixi + P x_xi) - 2b x_xieta + g(x_etaeta + Q x_eta) = 0.
         Periodic rows (j=0 bottom, j=nj-1 top=bottom+s) slide along T via ghost rows from the
         opposite side; column fixed_i (inlet/outlet) and the blade-side column are held."""
         ni, nj, _ = X.shape
+        Pi = None if Pc is None else Pc[1:-1, :, None]
+        Qi = None if Qc is None else Qc[1:-1, :, None]
         for _ in range(n_iter):
-            # ghost-extended array in j: row -1 = row nj-2 - s ; row nj = row 1 + s
             G = np.concatenate([(X[:, nj - 2] - [0.0, s])[:, None], X, (X[:, 1] + [0.0, s])[:, None]], axis=1)
-            C = G[1:-1, 1:-1 + 1]  # placeholder (unused)
-            xp, xm = G[2:, 1:-1], G[:-2, 1:-1]          # i±1, j in 0..nj-1 (i in 1..ni-2)
-            yp, ym = G[1:-1, 2:], G[1:-1, :-2]          # j±1
+            xp, xm = G[2:, 1:-1], G[:-2, 1:-1]
+            yp, ym = G[1:-1, 2:], G[1:-1, :-2]
             xpyp, xpym = G[2:, 2:], G[2:, :-2]
             xmyp, xmym = G[:-2, 2:], G[:-2, :-2]
             Xi = 0.5 * (xp - xm)
@@ -603,10 +821,11 @@ def build_curved_periodic(
             ga = (Xi ** 2).sum(-1)[..., None]
             be = (Xi * Et).sum(-1)[..., None]
             num = al * (xp + xm) + ga * (yp + ym) - 0.5 * be * (xpyp - xpym - xmyp + xmym)
+            if Pi is not None:
+                num = num + al * Pi * Xi + ga * Qi * Et
             new = num / (2.0 * (al + ga))
-            Y = X[1:-1] + omega * (new - X[1:-1])       # rows i=1..ni-2, all j
+            Y = X[1:-1] + omega * (new - X[1:-1])
             X[1:-1, 1:-1] = Y[:, 1:-1]
-            # periodic rows: take x from the bottom-row update, project onto T
             xb = Y[:, 0, 0]
             lo_, hi_ = min(X[0, 0, 0], X[-1, 0, 0]), max(X[0, 0, 0], X[-1, 0, 0])
             xb = np.clip(xb, lo_, hi_)
@@ -618,8 +837,139 @@ def build_curved_periodic(
             X[1:-1, nj - 1, 1] = Tof(xb)
         return X
 
-    XW = smooth(XW, 0, pr.smooth_iter)
-    XE = smooth(XE, XE.shape[0] - 1, pr.smooth_iter)
+    def _ef(C):
+        e_ = np.r_[0, np.cumsum(np.hypot(*np.diff(C, axis=0).T))]
+        return e_ / e_[-1]
+
+    if not pr.graded:
+        h_Q = float(np.hypot(*(PT[1] - PT[0])))
+        xW, qW = per_x(x_in, xQ, pr.n_w, h_Q, at_end=True)
+        xE, qE = per_x(xQ2, x_out, pr.n_e, float(np.hypot(*(PT[-1] - PT[-2]))), at_end=False)
+        XW = _tfi(np.c_[xW, Tof(xW) - s], np.c_[xW, Tof(xW)], np.c_[np.full(nyW, x_in), (Tof(x_in) - s) + _ef(east) * s], east)
+        XE = _tfi(np.c_[xE, Tof(xE) - s], np.c_[xE, Tof(xE)], westE, np.c_[np.full(nyE, x_out), (Tof(x_out) - s) + _ef(westE) * s])
+        XW = smooth(XW, 0, pr.smooth_iter)
+        XE = smooth(XE, XE.shape[0] - 1, pr.smooth_iter)
+    else:
+        # first W/E cell across each composite node = the neighbour cell width on the other side
+        # (passage streamwise cell along the U/D end lines, last O-layer thickness around the noses)
+        def _wid(A_, B_):
+            return np.hypot(*(A_ - B_).T)
+
+        def _gm(a_, b_):
+            return float(np.sqrt(a_ * b_))
+
+        jc = (pr.n_fill, pr.n_fill + pr.n_nose)   # end-line / nose-outer corners (both W and E)
+
+        def _h0_prep(h0):
+            jj = np.arange(len(h0))
+            f = np.ones(len(h0))
+            for c in jc:
+                f = f + (pr.corner_fac - 1.0) * np.exp(-(((jj - c) / pr.corner_w) ** 2))
+            h0 = _limit_ratio(h0 * f, pr.h0_ratio)
+            h0[0] = h0[-1] = min(h0[0], h0[-1])
+            return h0
+
+        hUw = _wid(XU[0, nO:], XU[1, nO:])[::-1]
+        hNw = _wid(XNL[:, -1], XNL[:, -2])
+        hDw = _wid(XD[0, nO:], XD[1, nO:])
+        h0W = _h0_prep(np.r_[hUw[:-1], _gm(hUw[-1], hNw[0]), hNw[1:-1], _gm(hNw[-1], hDw[0]), hDw[1:]][::-1])
+        hDe = _wid(XD[-1, nO:], XD[-2, nO:])[::-1]
+        hNe = _wid(XNT[:, -1], XNT[:, -2])
+        hUe = _wid(XU[-1, nO:], XU[-2, nO:])
+        h0E = _h0_prep(np.r_[hDe[:-1], _gm(hDe[-1], hNe[0]), hNe[1:-1], _gm(hNe[-1], hUe[0]), hUe[1:]])
+        if len(h0W) != nyW or len(h0E) != nyE:
+            raise RuntimeError(f"graded h0 length mismatch W {len(h0W)}/{nyW} E {len(h0E)}/{nyE}")
+        r = pr.w_growth
+
+        def _n_needed(h0, Lj):
+            return int(np.max(np.ceil(np.log1p(Lj * (r - 1.0) / h0) / np.log(r))))
+
+        n_w = _n_needed(h0W, (east[:, 0] - x_in) * 1.08)
+        n_e = _n_needed(h0E, (x_out - westE[:, 0]) * 1.08)
+        xW = xQ - _graded_dist(h0W[0], xQ - x_in, n_w, r)[::-1]
+        xE = xQ2 + _graded_dist(h0E[0], x_out - xQ2, n_e, r)
+        qW = qE = r
+        wu = pr.inlet_uniform
+        XW = _tfi(np.c_[xW, Tof(xW) - s], np.c_[xW, Tof(xW)],
+                  np.c_[np.full(nyW, x_in), (Tof(x_in) - s) + ((1 - wu) * _ef(east) + wu * np.linspace(0, 1, nyW)) * s], east)
+        XE = _tfi(np.c_[xE, Tof(xE) - s], np.c_[xE, Tof(xE)], westE,
+                  np.c_[np.full(nyE, x_out), (Tof(x_out) - s) + ((1 - wu) * _ef(westE) + wu * np.linspace(0, 1, nyE)) * s])
+
+        def _respace(X, h0, at_end):
+            """Re-space each j-line to the graded target and build P from it. Near the composite
+            the per-line target (first cell = neighbour width, growth <= r) holds and the first rows
+            sit on the composite normal; far away all lines share one spacing fraction (smooth
+            j-lines in the coarse inlet/outlet region)."""
+            ni, nj, _ = X.shape
+            Pc = np.zeros((ni, nj))
+            kk = np.arange(ni)
+            Pl0 = X[::-1, 0] if at_end else X[:, 0]
+            L0 = float(np.hypot(*np.diff(Pl0, axis=0).T).sum())
+            F_ref = _graded_dist(h0[0], L0, ni - 1, r) / L0
+            wk = np.exp(-((kk / pr.blend_k) ** 2))
+            wo = np.exp(-((kk / pr.ortho_k) ** 2))[:, None]
+            C = (X[-1] if at_end else X[0]).copy()
+            u1 = np.diff(C, axis=0)
+            u1 = u1 / np.hypot(*u1.T)[:, None]
+            tg = np.r_[u1[:1], u1[:-1] + u1[1:], u1[-1:]]
+            nrm = np.c_[tg[:, 1], -tg[:, 0]]
+            nrm = nrm / np.hypot(*nrm.T)[:, None]
+            inn = (X[-2] if at_end else X[1]) - C
+            nrm = nrm * np.sign((nrm * inn).sum(1))[:, None]
+            jj_ = np.arange(nj)
+            wj = np.ones(nj)
+            for c in jc:
+                wj = wj * (1 - np.exp(-(((jj_ - c) / pr.ortho_corner_w) ** 2)))
+            for j in range(nj):
+                Pl = X[::-1, j] if at_end else X[:, j]
+                d = np.hypot(*np.diff(Pl, axis=0).T)
+                S = np.r_[0.0, np.cumsum(d)]
+                G = _graded_dist(h0[j], S[-1], ni - 1, r)
+                Sn = wk * G + (1 - wk) * S[-1] * F_ref
+                if np.any(np.diff(Sn) <= 0):
+                    Sn = G
+                Pn = np.c_[np.interp(Sn, S, Pl[:, 0]), np.interp(Sn, S, Pl[:, 1])]
+                if 0 < j < nj - 1 and wj[j] > 1e-3:
+                    # (not at the convex end-line/nose corners: normals from both sides converge there)
+                    Pn = wj[j] * wo * (C[j] + Sn[:, None] * nrm[j]) + (1 - wj[j] * wo) * Pn
+                Pn[0], Pn[-1] = Pl[0], Pl[-1]
+                X[:, j] = Pn[::-1] if at_end else Pn
+                h = np.diff(Sn)
+                Pc[1:-1, j] = _ctrl_from_spacing(h[::-1] if at_end else h)
+            xb = X[1:-1, 0, 0]
+            X[1:-1, 0, 1] = Tof(xb) - s
+            X[1:-1, nj - 1, 0] = xb
+            X[1:-1, nj - 1, 1] = Tof(xb)
+            return X, Pc
+
+        def _qline(C):
+            d = np.hypot(*np.diff(C, axis=0).T)
+            return np.clip(_ctrl_from_spacing(np.r_[d[-1], d, d[0]]), -pr.q_clip, pr.q_clip)
+
+        def _qfield(X, comp_i):
+            ni = X.shape[0]
+            qc, qf = _qline(X[comp_i]), _qline(X[ni - 1 - comp_i])
+            w_ = np.linspace(0.0, 1.0, ni)
+            if comp_i == 0:
+                w_ = w_[::-1]
+            return w_[:, None] * qc[None, :] + (1 - w_[:, None]) * qf[None, :]
+
+        XW, PW = _respace(XW, h0W, True)
+        XE, PE = _respace(XE, h0E, False)
+        QW, QE = _qfield(XW, XW.shape[0] - 1), _qfield(XE, 0)
+        # elliptic smoothing with source terms, interleaved with spacing restoration along the
+        # smoothed i-lines (boundary-normal spacing frozen); the last operation is a re-space
+        for _ in range(max(1, pr.smooth_iter // pr.respace_every)):
+            XW = smooth(XW, 0, pr.respace_every, Pc=PW, Qc=QW)
+            XE = smooth(XE, XE.shape[0] - 1, pr.respace_every, Pc=PE, Qc=QE)
+            XW, _ = _respace(XW, h0W, True)
+            XE, _ = _respace(XE, h0E, False)
+        notes.append(f"graded W/E: n_w={n_w} n_e={n_e}, growth {r} to a coarse plateau; first cell = neighbour width "
+                     f"(W {h0W.min()*1e6:.1f}-{h0W.max()*1e6:.1f} um, E {h0E.min()*1e6:.1f}-{h0E.max()*1e6:.1f} um), corner_fac {pr.corner_fac}")
+        for _nm, _X, _ha, _hb in (("LE", XNL, haL, hbL), ("TE", XNT, haT, hbT)):
+            _w = np.hypot(*np.diff(_X[:, 0], axis=0).T)
+            notes.append(f"{_nm} nose end cells {_w[0]*1e6:.1f}/{_w[-1]*1e6:.1f} um vs passage wall {_ha*1e6:.1f}/{_hb*1e6:.1f} um, "
+                         f"max adjacent ratio {float(np.max(np.maximum(_w[1:]/_w[:-1], _w[:-1]/_w[1:]))):.3f}")
 
     # ---- assemble nodes/quads
     blocks = {"U": XU, "D": XD, "NL": XNL, "NT": XNT, "W": XW, "E": XE}
